@@ -1,6 +1,6 @@
 /* CHANGE NOTE
 Why: Save tutor feedback and make learner memory age like a human tutor's memory
-What changed: Practice updates now separate durable learning insights from expiring conversational notes
+What changed: Practice updates now separate validated fix pairs, durable learning insights, and expiring conversational notes
 Behaviour/Assumptions: Chat API remains backward-compatible and older noisy profile memory may exist
 Rollback: git checkout -- src/index.ts
 - mj
@@ -83,12 +83,12 @@ app.get("/chat/sessions/:id", async (req, res) => {
 
 // Add a chat message
 app.post("/chat/sessions/:id/messages", async (req, res) => {
-  const { role, text, correction, rewrite, explanation, fluencyFeedback, targetPhraseFeedback } = req.body || {};
+  const { role, text, fixes, correction, rewrite, explanation, fluencyFeedback, targetPhraseFeedback } = req.body || {};
   if (!role || !text) return res.status(400).json({ error: "invalid_payload" });
 
   const sess = await ChatSession.findByIdAndUpdate(
     req.params.id,
-    { $push: { messages: { role, text, correction, rewrite, explanation, fluencyFeedback, targetPhraseFeedback } } },
+    { $push: { messages: { role, text, fixes: cleanFixes(fixes), correction, rewrite, explanation, fluencyFeedback, targetPhraseFeedback } } },
     { new: true }
   );
   if (!sess) return res.status(404).json({ error: "not_found" });
@@ -256,18 +256,21 @@ function buildInitialMemory(name: string, learningGoal: unknown, interests: unkn
 function updatePracticeMemory(memory: any, payload: any, currentLevel: string) {
   const userMessage = cleanString(payload.userMessage, 320);
   const assistantReply = cleanString(payload.assistantReply, 320);
-  const correction = cleanString(payload.correction, 320);
-  const rewrite = cleanString(payload.rewrite, 320);
+  const fixes = cleanFixes(payload.fixes);
+  const correction = cleanString(payload.correction, 1200);
+  const rewrite = cleanString(payload.rewrite, 1200);
   const explanation = cleanString(payload.explanation, 120);
   const fluencyFeedback = cleanString(payload.fluencyFeedback, 160);
   const targetPhraseFeedback = cleanString(payload.targetPhraseFeedback, 160);
-  const correctionIsUseful = isMeaningfulCorrection(userMessage, correction, explanation, assistantReply);
+  const fixSummary = formatFixes(fixes);
+  const correctionSummary = fixSummary || correction;
+  const correctionIsUseful = fixes.length > 0 || isMeaningfulCorrection(userMessage, correction, explanation, assistantReply);
   const now = new Date();
 
   const recurringErrors = appendCapped(
     cleanMemoryList(memory.recurringErrors || []),
     correctionIsUseful
-      ? `${userMessage || "Recent utterance"} -> ${correction}${explanation ? ` (${explanation})` : ""}`
+      ? `${userMessage || "Recent utterance"} -> ${correctionSummary}${explanation ? ` (${explanation})` : ""}`
       : "",
     10
   );
@@ -279,7 +282,8 @@ function updatePracticeMemory(memory: any, payload: any, currentLevel: string) {
   const learningInsights = updateLearningInsights(memory.learningInsights || [], {
     correctionIsUseful,
     userMessage,
-    correction,
+    correction: correctionSummary,
+    fixes,
     rewrite,
     explanation,
     now,
@@ -323,6 +327,29 @@ function buildMemorySummary(memory: any) {
 
 function cleanString(value: unknown, maxLength: number) {
   return typeof value === "string" ? value.trim().replace(/\s+/g, " ").slice(0, maxLength) : "";
+}
+
+function cleanFixes(value: unknown) {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<string>();
+  const fixes = [];
+  for (const item of value) {
+    const fix = item && typeof item === "object" ? (item as any) : null;
+    if (!fix) continue;
+    const original = cleanString(fix.original, 220);
+    const corrected = cleanString(fix.corrected, 220);
+    const note = cleanString(fix.note, 80);
+    const key = `${normalizeText(original)}->${normalizeText(corrected)}`;
+    if (!original || !corrected || normalizeText(original) === normalizeText(corrected) || seen.has(key)) continue;
+    seen.add(key);
+    fixes.push({ original, corrected, note });
+    if (fixes.length >= 5) break;
+  }
+  return fixes;
+}
+
+function formatFixes(fixes: Array<{ original: string; corrected: string; note?: string }>) {
+  return fixes.map((fix) => `${fix.original} -> ${fix.corrected}`).join("; ");
 }
 
 function cleanStringArray(value: unknown, maxItems: number, maxLength: number) {

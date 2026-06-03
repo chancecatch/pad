@@ -1,7 +1,7 @@
 /* CHANGE NOTE
 Why: Make tutor chat local-only
-What changed: Shortened correction guidance and sanitize tutor feedback before saving it
-Behaviour/Assumptions: LOCAL_CHAT_BASE_URL points to an accessible chat server and learner memory may contain older noisy feedback
+What changed: Switched visible feedback to validated fix pairs and kept full rewrites as optional memory
+Behaviour/Assumptions: LOCAL_CHAT_BASE_URL points to an accessible chat server and fixes must match the current learner utterance
 Rollback: git checkout -- src/app/api/tutor/chat/route.ts
 - mj
 */
@@ -15,6 +15,7 @@ import {
   resolveLocalServiceConfig,
   tutorErrorResponse,
   type SpeechMetrics,
+  type TutorFix,
 } from "@/lib/tutorProviders";
 import { resolveBackendBase } from "@/lib/backendProxy";
 
@@ -88,24 +89,26 @@ export async function POST(req: Request) {
       "You are an English speaking tutor and conversation partner.",
       "Keep replies short (1-3 sentences), conversational, and always in English.",
       "Always include one brief follow-up question to keep the conversation going.",
-      "The learner's last utterance is the only sentence you may correct.",
-      "Never correct or rewrite your own tutor reply.",
-      "If the learner's utterance is already natural, set correction, rewrite, explanation, fluencyFeedback, and targetPhraseFeedback to empty strings.",
-      "Do not leave correction empty when the learner has clear grammar, preposition, article, possessive, tense, plurality, or word-choice errors, even if the meaning is understandable.",
+      "The learner's last utterance is the only text you may correct.",
+      "Never correct or rewrite your own tutor reply, conversation history, profile memory, interview questions, or previous corrections.",
+      "If the learner's utterance is already natural, set fixes to an empty array and leave correction, rewrite, explanation, fluencyFeedback, and targetPhraseFeedback empty.",
+      "Do not leave fixes empty when the learner has clear grammar, preposition, article, possessive, tense, plurality, or word-choice errors, even if the meaning is understandable.",
       "Common learner fixes include: 'in this weekend' -> 'this weekend'; 'a master student' -> 'a master's student' or 'a graduate student'; 'research things' -> 'research work' or 'research tasks'.",
-      "Correction must be a corrected learner sentence, not a friendly response or follow-up question.",
-      "Keep correction separate from reply. Do not place the corrected learner sentence inside reply.",
-      "Set correction to one natural, grammatically correct version of the learner's intended meaning. Keep it concise and preserve the learner's intent.",
-      "Set rewrite to one optional more fluent alternative for memory only. Leave it empty if correction is enough.",
-      "Set explanation to a very short note, max 8 words, naming only the key fix. Do not write a long grammar lesson.",
+      "Return fixes as short before/after pairs for only the wrong parts. Do not rewrite correct parts.",
+      "Each fix.original must be the shortest exact wrong phrase from the current learner utterance, not correct surrounding context or a whole paragraph.",
+      "Each fix.corrected must be the corrected phrase. Each fix.note must name the pattern in 2-6 words.",
+      "Keep fixes, correction, and rewrite separate from reply. The reply should react to the learner's meaning and ask the next question, not restate the corrected sentence.",
+      "Keep correction as a concise semicolon-separated summary of fixes for backward compatibility, not a full paragraph.",
+      "Set rewrite to one optional polished full answer for memory only. Leave it empty if the learner mostly needs local fixes.",
+      "Set explanation to a very short overall note, max 8 words, naming only the main pattern. Do not write a long grammar lesson.",
       "Set fluencyFeedback only for a major speech rhythm issue; otherwise use an empty string.",
       "Set targetPhraseFeedback only if target phrases were explicitly provided; otherwise use an empty string.",
-      'Return only JSON with keys "reply", "correction", "rewrite", "explanation", "followUp", "fluencyFeedback", and "targetPhraseFeedback".',
+      'Return only JSON with keys "reply", "fixes", "correction", "rewrite", "explanation", "followUp", "fluencyFeedback", and "targetPhraseFeedback".',
     ];
     const profilePrompt = buildLearnerProfilePrompt(learnerProfile);
     if (profilePrompt) {
       parts.push(profilePrompt);
-      parts.push("Use durable learning memory to choose what to correct or reinforce. Use soft recent memory lightly, like a human tutor who may remember recent context but does not recite it.");
+      parts.push("Use durable learning memory only as pattern guidance. Never copy memory text into fixes or correction.");
     }
     if (persona) parts.push(`Persona: ${persona}. Stay in character.`);
     if (learner) parts.push(`Learner persona: ${learner}. Address the learner accordingly and tailor your responses to that role.`);
@@ -161,6 +164,7 @@ export async function POST(req: Request) {
           userMessage: message,
           assistantReply: displayReply,
           correction: feedback.correction,
+          fixes: feedback.fixes,
           rewrite: feedback.rewrite,
           explanation: feedback.explanation,
           fluencyFeedback: feedback.fluencyFeedback,
@@ -225,9 +229,6 @@ async function localResponseError(response: Response) {
 function buildLearnerProfilePrompt(profile?: LearnerProfile | null) {
   if (!profile) return "";
   const memory = profile.memory || {};
-  const recurringErrors = (memory.recurringErrors || []).filter(isUsefulMemoryLine);
-  const usefulPhrases = (memory.usefulPhrases || []).filter(Boolean);
-  const lastFeedback = (memory.lastFeedback || []).filter(isUsefulMemoryLine);
   const learningInsights = (memory.learningInsights || [])
     .filter((item) => item?.text && isUsefulMemoryLine(item.text))
     .sort((a, b) => Number(b.strength || 0) - Number(a.strength || 0));
@@ -239,21 +240,17 @@ function buildLearnerProfilePrompt(profile?: LearnerProfile | null) {
     profile.level && `Estimated level: ${profile.level}`,
     profile.learningGoal && `Learning goal: ${profile.learningGoal}`,
     profile.interests?.length && `Interests: ${profile.interests.join(", ")}`,
-    learningInsights.length && `Durable learning memory: ${learningInsights.slice(0, 6).map(formatLearningInsight).join(" | ")}`,
-    recurringErrors.length && `Recurring errors: ${recurringErrors.slice(0, 5).join(" | ")}`,
-    usefulPhrases.length && `Useful phrases to reinforce: ${usefulPhrases.slice(0, 5).join(" | ")}`,
+    learningInsights.length && `Durable learning patterns: ${learningInsights.slice(0, 6).map(formatLearningInsight).join(" | ")}`,
     activeEpisodicNotes.length && `Soft recent memory: ${activeEpisodicNotes.slice(0, 5).map((item) => item.text).join(" | ")}`,
     memory.recentTopics?.length && `Fallback recent topics: ${memory.recentTopics.slice(0, 3).join(" | ")}`,
-    lastFeedback.length && `Recent feedback: ${lastFeedback.slice(0, 5).join(" | ")}`,
     memory.estimatedLevel && `Memory-estimated level: ${memory.estimatedLevel}`,
   ].filter(Boolean);
   return parts.length ? `Learner profile and tutor memory:\n${parts.join("\n")}` : "";
 }
 
-function formatLearningInsight(item: { text?: string; example?: string; evidenceCount?: number }) {
+function formatLearningInsight(item: { text?: string; evidenceCount?: number }) {
   const count = item.evidenceCount ? ` (${item.evidenceCount}x)` : "";
-  const example = item.example ? ` Example: ${item.example}` : "";
-  return `${item.text}${count}${example}`;
+  return `${item.text}${count}`;
 }
 
 function isActiveMemoryNote(expiresAt?: string) {
@@ -282,6 +279,7 @@ async function updateLearnerPractice(profileId: string, payload: Record<string, 
 }
 
 type TutorFeedback = {
+  fixes: TutorFix[];
   correction: string;
   rewrite: string;
   explanation: string;
@@ -296,7 +294,7 @@ type TutorJson = Partial<TutorFeedback> & {
 };
 
 function recoverMisplacedCorrection(json: TutorJson, userMessage: string) {
-  if (cleanFeedback(json.correction, 260)) return json;
+  if (json.fixes?.length || cleanFeedback(json.correction, 1200)) return json;
 
   const reply = cleanFeedback(json.reply, 600);
   const recovered = extractCorrectionFromReply(reply, userMessage);
@@ -349,14 +347,16 @@ function inferCorrectionExplanation(userMessage: string) {
 }
 
 function sanitizeTutorFeedback(json: Partial<TutorFeedback>, userMessage: string, displayReply: string, hasTargetPhrases: boolean): TutorFeedback {
-  const correction = cleanFeedback(json.correction, 260);
+  const fixes = sanitizeTutorFixes(json.fixes, userMessage);
+  const correction = fixes.length ? formatFixesAsCorrection(fixes) : cleanFeedback(json.correction, 1200);
   const explanation = cleanFeedback(json.explanation, 80);
-  const meaningfulCorrection = isMeaningfulCorrection(userMessage, correction, explanation, displayReply);
+  const meaningfulCorrection = fixes.length > 0 || isMeaningfulCorrection(userMessage, correction, explanation, displayReply);
 
   return {
+    fixes,
     correction: meaningfulCorrection ? correction : "",
-    rewrite: meaningfulCorrection ? cleanFeedback(json.rewrite, 260) : "",
-    explanation: meaningfulCorrection ? trimWords(explanation, 8) : "",
+    rewrite: meaningfulCorrection ? cleanFeedback(json.rewrite, 1200) : "",
+    explanation: meaningfulCorrection ? trimWords(explanation || fixes[0]?.note || "", 8) : "",
     fluencyFeedback: meaningfulCorrection ? cleanFeedback(json.fluencyFeedback, 120) : "",
     targetPhraseFeedback: hasTargetPhrases && meaningfulCorrection ? cleanFeedback(json.targetPhraseFeedback, 120) : "",
   };
@@ -367,8 +367,53 @@ function isMeaningfulCorrection(userMessage: string, correction: string, explana
   if (isNoCorrectionText(correction) || isNoCorrectionText(explanation)) return false;
   const normalizedCorrection = normalizeText(correction);
   if (!normalizedCorrection || normalizedCorrection === normalizeText(userMessage)) return false;
+  if (!isCorrectionRelatedToCurrentMessage(userMessage, correction)) return false;
   if (isTutorReplyLike(correction, userMessage, displayReply)) return false;
   return true;
+}
+
+function sanitizeTutorFixes(value: unknown, userMessage: string): TutorFix[] {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<string>();
+  const fixes: TutorFix[] = [];
+
+  for (const item of value) {
+    const fix = item && typeof item === "object" ? (item as Partial<TutorFix>) : null;
+    if (!fix) continue;
+    const original = cleanFeedback(fix.original, 220);
+    const corrected = cleanFeedback(fix.corrected, 220);
+    const note = trimWords(cleanFeedback(fix.note, 80), 8);
+    const key = `${normalizeText(original)}->${normalizeText(corrected)}`;
+
+    if (!original || !corrected || seen.has(key)) continue;
+    if (normalizeText(original) === normalizeText(corrected)) continue;
+    if (!phraseAppearsInMessage(userMessage, original)) continue;
+    if (isTutorReplyLike(corrected, userMessage, "")) continue;
+
+    seen.add(key);
+    fixes.push({ original, corrected, note });
+    if (fixes.length >= 5) break;
+  }
+
+  return fixes;
+}
+
+function formatFixesAsCorrection(fixes: TutorFix[]) {
+  return fixes.map((fix) => `${fix.original} -> ${fix.corrected}`).join("; ");
+}
+
+function phraseAppearsInMessage(message: string, phrase: string) {
+  const normalizedMessage = normalizeText(message);
+  const normalizedPhrase = normalizeText(phrase);
+  return Boolean(normalizedPhrase && normalizedMessage.includes(normalizedPhrase));
+}
+
+function isCorrectionRelatedToCurrentMessage(userMessage: string, correction: string) {
+  const userWords = significantWords(userMessage);
+  const correctionWords = significantWords(correction);
+  if (userWords.length < 4 || correctionWords.length < 4) return true;
+  const overlap = correctionWords.filter((word) => userWords.includes(word)).length / correctionWords.length;
+  return overlap >= 0.25;
 }
 
 function isTutorReplyLike(correction: string, userMessage: string, displayReply: string) {

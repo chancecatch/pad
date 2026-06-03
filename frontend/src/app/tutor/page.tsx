@@ -1,7 +1,7 @@
 /* CHANGE NOTE
 Why: Make the tutor start from learner identity instead of per-session settings
-What changed: Added profile login and simplified visible learner feedback
-Behaviour/Assumptions: Learner profiles persist in MongoDB and full feedback is saved for tutor memory
+What changed: Added profile login and fix-pair visible learner feedback
+Behaviour/Assumptions: Learner profiles persist in MongoDB and full rewrites are saved for tutor memory
 Rollback: git checkout -- src/app/tutor/page.tsx
 - mj
 */
@@ -13,11 +13,18 @@ import VoiceTutor from "@/components/VoiceTutor";
 type Msg = {
   role: "user" | "assistant";
   text: string;
+  fixes?: TutorFix[];
   correction?: string;
   rewrite?: string;
   explanation?: string;
   fluencyFeedback?: string;
   targetPhraseFeedback?: string;
+};
+
+type TutorFix = {
+  original: string;
+  corrected: string;
+  note?: string;
 };
 
 type LearnerProfile = {
@@ -66,8 +73,9 @@ export default function TutorPage() {
   const [profileBusy, setProfileBusy] = useState(false);
 
   const renderFeedback = (m: Msg): string[] => [
-    m.correction && `Correction: ${m.correction}`,
-    m.explanation && `Note: ${m.explanation}`,
+    ...(m.fixes?.length ? m.fixes.map(formatFixLine) : []),
+    !m.fixes?.length && m.correction && `Correction: ${m.correction}`,
+    !m.fixes?.length && m.explanation && `Note: ${m.explanation}`,
   ].filter((line): line is string => Boolean(line));
 
   const loadProfiles = useCallback(async () => {
@@ -312,9 +320,9 @@ export default function TutorPage() {
 function attachFeedbackForTutorMessage(messages: Msg[], msg: Msg) {
   if (msg.role !== "assistant") return [...messages, msg];
 
-  const { correction, rewrite, explanation, fluencyFeedback, targetPhraseFeedback, ...assistantMessage } = msg;
-  const feedback = { correction, rewrite, explanation, fluencyFeedback, targetPhraseFeedback };
-  const hasFeedback = Boolean(correction || rewrite || explanation || fluencyFeedback || targetPhraseFeedback);
+  const { fixes, correction, rewrite, explanation, fluencyFeedback, targetPhraseFeedback, ...assistantMessage } = msg;
+  const feedback = { fixes, correction, rewrite, explanation, fluencyFeedback, targetPhraseFeedback };
+  const hasFeedback = Boolean(fixes?.length || correction || rewrite || explanation || fluencyFeedback || targetPhraseFeedback);
   if (!hasFeedback) return [...messages, assistantMessage];
 
   const next = [...messages];
@@ -325,6 +333,11 @@ function attachFeedbackForTutorMessage(messages: Msg[], msg: Msg) {
     }
   }
   return [...next, assistantMessage];
+}
+
+function formatFixLine(fix: TutorFix) {
+  const note = fix.note ? ` (${fix.note})` : "";
+  return `Fix: ${fix.original} -> ${fix.corrected}${note}`;
 }
 
 const labelStyle: React.CSSProperties = {

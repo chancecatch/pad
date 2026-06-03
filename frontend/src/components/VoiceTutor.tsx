@@ -1,7 +1,7 @@
 /* CHANGE NOTE
 Why: Keep local tutor recording and playback configurable without noisy diagnostics
-What changed: Added voice/microphone selectors, first-gesture playback unlock, and simplified microphone display to input level only
-Behaviour/Assumptions: Visible feedback stays concise while full feedback remains available for tutor memory; mobile browsers may still require manual playback
+What changed: Added voice/microphone selectors, first-gesture playback unlock, and fix-pair feedback display
+Behaviour/Assumptions: Visible feedback shows wrong fragments first while full rewrite remains available for tutor memory
 Rollback: git checkout -- src/components/VoiceTutor.tsx
 - mj
 */
@@ -20,11 +20,17 @@ type SpeechMetrics = {
 type Msg = {
   role: "user" | "assistant";
   text: string;
+  fixes?: TutorFix[];
   correction?: string;
   rewrite?: string;
   explanation?: string;
   fluencyFeedback?: string;
   targetPhraseFeedback?: string;
+};
+type TutorFix = {
+  original: string;
+  corrected: string;
+  note?: string;
 };
 type LearnerProfile = {
   _id: string;
@@ -178,6 +184,7 @@ export default function VoiceTutor({
       const reply = data?.reply ?? "";
       if (data?.learnerProfile?._id) onProfileUpdate?.(data.learnerProfile);
       const feedback = {
+        fixes: normalizeFixes(data?.fixes),
         correction: data?.correction ?? "",
         rewrite: data?.rewrite ?? "",
         explanation: data?.explanation ?? "",
@@ -540,8 +547,9 @@ export default function VoiceTutor({
   const canPlay = !busy && (!!pendingAudioUrl || !!lastTutorAudioUrl);
   const shouldShowMicDiagnostics = recording || Boolean(micTrackStatus) || Boolean(micNotice);
   const renderFeedback = (m: Msg): string[] => [
-    m.correction && `Correction: ${m.correction}`,
-    m.explanation && `Note: ${m.explanation}`,
+    ...(m.fixes?.length ? m.fixes.map(formatFixLine) : []),
+    !m.fixes?.length && m.correction && `Correction: ${m.correction}`,
+    !m.fixes?.length && m.explanation && `Note: ${m.explanation}`,
   ].filter((line): line is string => Boolean(line));
 
   return (
@@ -736,7 +744,8 @@ export default function VoiceTutor({
 
 function attachFeedbackToLastUser(messages: Msg[], feedback: Partial<Msg>) {
   const hasFeedback = Boolean(
-    feedback.correction ||
+    feedback.fixes?.length ||
+      feedback.correction ||
       feedback.rewrite ||
       feedback.explanation ||
       feedback.fluencyFeedback ||
@@ -752,6 +761,25 @@ function attachFeedbackToLastUser(messages: Msg[], feedback: Partial<Msg>) {
     }
   }
   return next;
+}
+
+function normalizeFixes(value: unknown): TutorFix[] {
+  if (!Array.isArray(value)) return [];
+  const fixes: TutorFix[] = [];
+  for (const item of value) {
+    if (!item || typeof item !== "object") continue;
+    const record = item as Record<string, unknown>;
+    const original = typeof record.original === "string" ? record.original.trim() : "";
+    const corrected = typeof record.corrected === "string" ? record.corrected.trim() : "";
+    const note = typeof record.note === "string" ? record.note.trim() : "";
+    if (original && corrected) fixes.push({ original, corrected, note });
+  }
+  return fixes;
+}
+
+function formatFixLine(fix: TutorFix) {
+  const note = fix.note ? ` (${fix.note})` : "";
+  return `Fix: ${fix.original} -> ${fix.corrected}${note}`;
 }
 
 const selectStyle = {

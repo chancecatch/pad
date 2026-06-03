@@ -1,6 +1,6 @@
 /* CHANGE NOTE
 Why: Preserve richer tutor feedback in saved chat sessions
-What changed: Added optional rewrite, fluency, and target phrase feedback fields to chat messages
+What changed: Added optional rewrite, fix pairs, fluency, and target phrase feedback fields to chat messages
 Behaviour/Assumptions: Existing user/assistant messages remain valid with only role and text
 Rollback: git checkout -- src/models/Chat.ts
 - mj
@@ -8,10 +8,20 @@ Rollback: git checkout -- src/models/Chat.ts
 
 import mongoose from "mongoose";
 
+const TutorFixSchema = new mongoose.Schema(
+  {
+    original: String,
+    corrected: String,
+    note: String,
+  },
+  { _id: false }
+);
+
 const ChatMessageSchema = new mongoose.Schema(
   {
     role: { type: String, enum: ["user", "assistant"], required: true },
     text: { type: String, required: true },
+    fixes: { type: [TutorFixSchema], default: [] },
     correction: String,
     rewrite: String,
     explanation: String,
