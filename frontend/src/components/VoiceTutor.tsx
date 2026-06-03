@@ -1,7 +1,7 @@
 /* CHANGE NOTE
 Why: Keep local tutor recording and playback configurable without noisy diagnostics
-What changed: Added voice/microphone selectors and simplified microphone display to input level only
-Behaviour/Assumptions: Visible feedback stays concise while full feedback remains available for tutor memory
+What changed: Added voice/microphone selectors, first-gesture playback unlock, and simplified microphone display to input level only
+Behaviour/Assumptions: Visible feedback stays concise while full feedback remains available for tutor memory; mobile browsers may still require manual playback
 Rollback: git checkout -- src/components/VoiceTutor.tsx
 - mj
 */
@@ -95,6 +95,8 @@ const FALLBACK_TTS_VOICES: VoiceOption[] = [
   { id: "am_adam", name: "am_adam" },
   { id: "am_echo", name: "am_echo" },
 ];
+const SILENT_AUDIO_DATA_URL =
+  "data:audio/wav;base64,UklGRigAAABXQVZFZm10IBAAAAABAAEAESsAACJWAAACABAAZGF0YQQAAAAAAA==";
 
 export default function VoiceTutor({
   sessionId: extSessionId = null,
@@ -116,6 +118,9 @@ export default function VoiceTutor({
   const chunksRef = useRef<BlobPart[]>([]);
   const streamRef = useRef<MediaStream | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
+  const playbackAudioRef = useRef<HTMLAudioElement | null>(null);
+  const playbackUnlockedRef = useRef(false);
+  const playbackUnlockPromiseRef = useRef<Promise<void> | null>(null);
   const levelFrameRef = useRef<number | null>(null);
   const maxInputLevelRef = useRef(0);
   const inputMeterAvailableRef = useRef(false);
@@ -138,6 +143,8 @@ export default function VoiceTutor({
   useEffect(() => {
     return () => {
       cleanupRecordingResources();
+      playbackAudioRef.current?.pause();
+      playbackAudioRef.current = null;
     };
   }, []);
 
@@ -207,7 +214,8 @@ export default function VoiceTutor({
           setLastTutorAudioUrl(url);
 
           try {
-            await new Audio(url).play();
+            await playTutorAudio(url);
+            setPendingAudioUrl(null);
           } catch {
             setPendingAudioUrl(url);
           }
@@ -486,6 +494,49 @@ export default function VoiceTutor({
     onMessage?.(msg);
   }
 
+  function getPlaybackAudio() {
+    if (!playbackAudioRef.current) {
+      const audio = new Audio();
+      audio.preload = "auto";
+      playbackAudioRef.current = audio;
+    }
+    return playbackAudioRef.current;
+  }
+
+  async function unlockPlaybackAudio() {
+    if (playbackUnlockedRef.current) return;
+    if (playbackUnlockPromiseRef.current) return playbackUnlockPromiseRef.current;
+    const audio = getPlaybackAudio();
+    playbackUnlockPromiseRef.current = (async () => {
+      try {
+        audio.pause();
+        audio.src = SILENT_AUDIO_DATA_URL;
+        audio.load();
+        await audio.play();
+        audio.pause();
+        audio.currentTime = 0;
+        playbackUnlockedRef.current = true;
+      } catch (error) {
+        console.warn("[tutor] Audio unlock skipped:", error);
+      } finally {
+        playbackUnlockPromiseRef.current = null;
+      }
+    })();
+    return playbackUnlockPromiseRef.current;
+  }
+
+  async function playTutorAudio(url: string) {
+    const audio = getPlaybackAudio();
+    audio.pause();
+    audio.src = url;
+    audio.load();
+    await audio.play();
+  }
+
+  function primePlaybackAudio() {
+    void unlockPlaybackAudio();
+  }
+
   const canPlay = !busy && (!!pendingAudioUrl || !!lastTutorAudioUrl);
   const shouldShowMicDiagnostics = recording || Boolean(micTrackStatus) || Boolean(micNotice);
   const renderFeedback = (m: Msg): string[] => [
@@ -494,11 +545,22 @@ export default function VoiceTutor({
   ].filter((line): line is string => Boolean(line));
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: compact ? '10px' : '12px' }}>
+    <div
+      onPointerDown={primePlaybackAudio}
+      onTouchStart={primePlaybackAudio}
+      style={{ display: 'flex', flexDirection: 'column', gap: compact ? '10px' : '12px' }}
+    >
       {/* ── Control bar ── */}
       <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '14px', flexWrap: 'wrap' }}>
         <button
-          onClick={recording ? stopRec : startRec}
+          onClick={() => {
+            primePlaybackAudio();
+            if (recording) {
+              stopRec();
+            } else {
+              void startRec();
+            }
+          }}
           disabled={busy}
           className="hover:opacity-60 disabled:opacity-30"
           style={{ display: 'flex', alignItems: 'center', gap: '5px' }}
@@ -517,11 +579,11 @@ export default function VoiceTutor({
 
         <button
           onClick={async () => {
+            await unlockPlaybackAudio();
             const audioUrl = pendingAudioUrl || lastTutorAudioUrl;
             if (audioUrl) {
               try {
-                const a = new Audio(audioUrl);
-                await a.play();
+                await playTutorAudio(audioUrl);
               } finally {
                 if (pendingAudioUrl) setPendingAudioUrl(null);
               }
@@ -536,7 +598,10 @@ export default function VoiceTutor({
         <span style={{ opacity: 0.15 }}>·</span>
 
         <button
-          onClick={() => setShowTypeBox((v) => !v)}
+          onClick={() => {
+            primePlaybackAudio();
+            setShowTypeBox((v) => !v);
+          }}
           disabled={busy}
           className="hover:opacity-60 disabled:opacity-30"
           style={{
@@ -608,6 +673,7 @@ export default function VoiceTutor({
             e.preventDefault();
             const t = manualText.trim();
             if (!t || busy) return;
+            primePlaybackAudio();
             setManualText("");
             await sendToChat(t);
           }}
