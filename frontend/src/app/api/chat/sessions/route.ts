@@ -1,9 +1,10 @@
 import { backendUnavailableResponse, proxyJsonResponse, resolveBackendBase } from "@/lib/backendProxy";
 
-export async function GET() {
+export async function GET(req: Request) {
   const base = resolveBackendBase();
+  const { search } = new URL(req.url);
   try {
-    const response = await fetch(`${base}/chat/sessions`, { cache: "no-store" });
+    const response = await fetch(`${base}/chat/sessions${search}`, { cache: "no-store" });
     return proxyJsonResponse(response);
   } catch (error) {
     return backendUnavailableResponse(error, "GET /chat/sessions");

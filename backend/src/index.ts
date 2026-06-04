@@ -1,6 +1,6 @@
 /* CHANGE NOTE
 Why: Save tutor feedback and make learner memory age like a human tutor's memory
-What changed: Practice updates now separate validated fix pairs, durable learning insights, and expiring conversational notes
+What changed: Practice updates now separate validated fix pairs, durable learning insights, expiring conversational notes, and profile-scoped recent sessions
 Behaviour/Assumptions: Chat API remains backward-compatible and older noisy profile memory may exist
 Rollback: git checkout -- src/index.ts
 - mj
@@ -56,8 +56,13 @@ app.delete("/notes/:id", async (req, res) => {
 });
 
 // List chat sessions
-app.get("/chat/sessions", async (_req, res) => {
-  const list = await ChatSession.find().sort({ updatedAt: -1 }).lean();
+app.get("/chat/sessions", async (req, res) => {
+  const clientId = cleanString(req.query.clientId, 120);
+  const limitValue = Number(req.query.limit);
+  const filter = clientId ? { clientId } : {};
+  let query = ChatSession.find(filter).sort({ updatedAt: -1 });
+  if (Number.isFinite(limitValue) && limitValue > 0) query = query.limit(Math.min(50, Math.floor(limitValue)));
+  const list = await query.lean();
   res.json(list);
 });
 

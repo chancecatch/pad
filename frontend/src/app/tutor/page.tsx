@@ -1,13 +1,13 @@
 /* CHANGE NOTE
 Why: Make the tutor start from learner identity instead of per-session settings
-What changed: Added profile login and fix-pair visible learner feedback
-Behaviour/Assumptions: Learner profiles persist in MongoDB and full rewrites are saved for tutor memory
+What changed: Added profile login, returning-learner context, and fix-pair visible learner feedback
+Behaviour/Assumptions: Learner profiles persist in MongoDB and recent practice context can seed a new session
 Rollback: git checkout -- src/app/tutor/page.tsx
 - mj
 */
 
 "use client";
-import { FormEvent, useCallback, useEffect, useState } from "react";
+import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import VoiceTutor from "@/components/VoiceTutor";
 
 type Msg = {
@@ -59,6 +59,18 @@ type LearnerProfile = {
   };
 };
 
+type SavedChatMessage = Msg & { createdAt?: string };
+
+type ChatSession = {
+  _id: string;
+  title?: string;
+  clientId?: string;
+  updatedAt?: string;
+  messages?: SavedChatMessage[];
+};
+
+type ResumeStatus = "idle" | "loading" | "ready" | "empty" | "error";
+
 export default function TutorPage() {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Msg[]>([]);
@@ -71,6 +83,9 @@ export default function TutorPage() {
   const [createGoal, setCreateGoal] = useState("");
   const [profileError, setProfileError] = useState("");
   const [profileBusy, setProfileBusy] = useState(false);
+  const [resumeStatus, setResumeStatus] = useState<ResumeStatus>("idle");
+  const [resumeError, setResumeError] = useState("");
+  const contextRequestRef = useRef(0);
 
   const renderFeedback = (m: Msg): string[] => [
     ...(m.fixes?.length ? m.fixes.map(formatFixLine) : []),
@@ -145,22 +160,46 @@ export default function TutorPage() {
   }
 
   function startProfile(profile: LearnerProfile) {
+    contextRequestRef.current += 1;
     setSelectedProfile(profile);
     setActiveProfileId(profile._id);
     setLoginPin("");
     setSessionId(null);
     setMessages([]);
+    setResumeStatus("loading");
+    setResumeError("");
+    void loadPracticeContext(profile, contextRequestRef.current);
   }
 
   function switchProfile() {
+    contextRequestRef.current += 1;
     setSelectedProfile(null);
     setSessionId(null);
     setMessages([]);
+    setResumeStatus("idle");
+    setResumeError("");
   }
 
   function handleProfileUpdate(profile: LearnerProfile) {
     setSelectedProfile(profile);
     setProfiles((current) => [profile, ...current.filter((item) => item._id !== profile._id)]);
+  }
+
+  async function loadPracticeContext(profile: LearnerProfile, requestId: number) {
+    try {
+      const response = await fetch(`/api/chat/sessions?clientId=${encodeURIComponent(profile._id)}&limit=3`, { cache: "no-store" });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data?.error || "Could not load recent practice");
+      if (contextRequestRef.current !== requestId) return;
+
+      const resumeMessages = buildResumeMessages(profile, Array.isArray(data) ? data : []);
+      setMessages(resumeMessages);
+      setResumeStatus(resumeMessages.length ? "ready" : "empty");
+    } catch (error) {
+      if (contextRequestRef.current !== requestId) return;
+      setResumeStatus("error");
+      setResumeError(error instanceof Error ? error.message : "Could not load recent practice");
+    }
   }
 
   function pinValue(value: string) {
@@ -271,6 +310,14 @@ export default function TutorPage() {
         </button>
       </section>
 
+      {resumeStatus === "loading" && (
+        <p style={{ fontSize: '12px', opacity: 0.45, marginBottom: '18px' }}>Loading recent practice...</p>
+      )}
+
+      {resumeStatus === "error" && resumeError && (
+        <p style={{ fontSize: '12px', opacity: 0.55, marginBottom: '18px' }}>{resumeError}</p>
+      )}
+
       <section>
         {messages.length > 0 && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', marginBottom: '24px' }}>
@@ -306,6 +353,7 @@ export default function TutorPage() {
           learnerProfile={selectedProfile}
           onProfileUpdate={handleProfileUpdate}
           onMessage={(msg) => {
+            contextRequestRef.current += 1;
             setMessages((m) => attachFeedbackForTutorMessage(m, msg));
           }}
           hideMessages
@@ -333,6 +381,88 @@ function attachFeedbackForTutorMessage(messages: Msg[], msg: Msg) {
     }
   }
   return [...next, assistantMessage];
+}
+
+function buildResumeMessages(profile: LearnerProfile, sessions: ChatSession[]): Msg[] {
+  const recentTurns = extractRecentTurns(sessions);
+  const focus = learningFocus(profile);
+  const hasPractice = recentTurns.length > 0 || focus.length > 0 || Number(profile.memory?.turnCount || 0) > 0;
+  if (!hasPractice) return [];
+
+  const lastUser = [...recentTurns].reverse().find((message) => message.role === "user");
+  return [
+    ...recentTurns,
+    {
+      role: "assistant",
+      text: buildWelcomeBackMessage(profile, lastUser?.text || "", focus),
+    },
+  ];
+}
+
+function extractRecentTurns(sessions: ChatSession[]) {
+  const latestSession = sessions.find((session) => Array.isArray(session.messages) && session.messages.some((message) => message?.text));
+  if (!latestSession?.messages) return [];
+  return latestSession.messages
+    .map(normalizeResumeMessage)
+    .filter((message): message is Msg => Boolean(message))
+    .slice(-4);
+}
+
+function normalizeResumeMessage(message: SavedChatMessage): Msg | null {
+  if (message.role !== "user" && message.role !== "assistant") return null;
+  const text = cleanResumeText(message.text, 260);
+  if (!text) return null;
+  const fixes = normalizeResumeFixes(message.fixes);
+  return {
+    role: message.role,
+    text,
+    fixes,
+    explanation: fixes.length ? cleanResumeText(message.explanation, 80) : "",
+  };
+}
+
+function normalizeResumeFixes(value: unknown): TutorFix[] {
+  if (!Array.isArray(value)) return [];
+  const fixes: TutorFix[] = [];
+  for (const item of value) {
+    if (!item || typeof item !== "object") continue;
+    const record = item as Record<string, unknown>;
+    const original = cleanResumeText(record.original, 120);
+    const corrected = cleanResumeText(record.corrected, 120);
+    const note = cleanResumeText(record.note, 60);
+    if (original && corrected) fixes.push({ original, corrected, note });
+    if (fixes.length >= 3) break;
+  }
+  return fixes;
+}
+
+function learningFocus(profile: LearnerProfile) {
+  const insights = profile.memory?.learningInsights || [];
+  return [...insights]
+    .filter((item) => item?.text)
+    .sort((a, b) => Number(b.strength || 0) - Number(a.strength || 0) || Number(b.evidenceCount || 0) - Number(a.evidenceCount || 0))
+    .map((item) => cleanResumeText(item.text, 70))
+    .filter(Boolean)
+    .slice(0, 2);
+}
+
+function buildWelcomeBackMessage(profile: LearnerProfile, lastUserText: string, focus: string[]) {
+  const lastLine = lastUserText
+    ? `Last time, you were saying: "${cleanResumeText(lastUserText, 120)}".`
+    : "Let's continue from your recent practice.";
+  const focusLine = focus.length ? `Today, let's keep an ear on ${focus.join(" and ")}.` : "";
+  return [
+    `Welcome back, ${profile.displayName}.`,
+    lastLine,
+    focusLine,
+    "What would you like to continue with?",
+  ].filter(Boolean).join(" ");
+}
+
+function cleanResumeText(value: unknown, maxLength: number) {
+  const text = typeof value === "string" ? value.trim().replace(/\s+/g, " ") : "";
+  if (!text || text.length <= maxLength) return text;
+  return `${text.slice(0, Math.max(0, maxLength - 3)).trim()}...`;
 }
 
 function formatFixLine(fix: TutorFix) {
