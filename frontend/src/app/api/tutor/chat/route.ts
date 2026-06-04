@@ -108,8 +108,7 @@ export async function POST(req: Request) {
     const profilePrompt = buildLearnerProfilePrompt(learnerProfile);
     if (profilePrompt) {
       parts.push(profilePrompt);
-      parts.push("Use durable learning memory only as pattern guidance. Never copy memory text into fixes or correction.");
-      parts.push("When durable learning patterns are present, gently create chances to practice those patterns in the next question without turning the chat into a grammar drill.");
+      parts.push("Use durable learning memory quietly to calibrate correction patterns over time. Do not announce a focus, force a drill, or copy memory text into fixes or correction.");
     }
     if (persona) parts.push(`Persona: ${persona}. Stay in character.`);
     if (learner) parts.push(`Learner persona: ${learner}. Address the learner accordingly and tailor your responses to that role.`);

@@ -1,6 +1,6 @@
 /* CHANGE NOTE
 Why: Make the tutor start from learner identity instead of per-session settings
-What changed: Added profile login, returning-learner context, and fix-pair visible learner feedback
+What changed: Added profile login, one-exchange returning context, and fix-pair visible learner feedback
 Behaviour/Assumptions: Learner profiles persist in MongoDB and recent practice context can seed a new session
 Rollback: git checkout -- src/app/tutor/page.tsx
 - mj
@@ -192,7 +192,7 @@ export default function TutorPage() {
       if (!response.ok) throw new Error(data?.error || "Could not load recent practice");
       if (contextRequestRef.current !== requestId) return;
 
-      const resumeMessages = buildResumeMessages(profile, Array.isArray(data) ? data : []);
+      const resumeMessages = buildResumeMessages(Array.isArray(data) ? data : []);
       setMessages(resumeMessages);
       setResumeStatus(resumeMessages.length ? "ready" : "empty");
     } catch (error) {
@@ -383,29 +383,23 @@ function attachFeedbackForTutorMessage(messages: Msg[], msg: Msg) {
   return [...next, assistantMessage];
 }
 
-function buildResumeMessages(profile: LearnerProfile, sessions: ChatSession[]): Msg[] {
-  const recentTurns = extractRecentTurns(sessions);
-  const focus = learningFocus(profile);
-  const hasPractice = recentTurns.length > 0 || focus.length > 0 || Number(profile.memory?.turnCount || 0) > 0;
-  if (!hasPractice) return [];
-
-  const lastUser = [...recentTurns].reverse().find((message) => message.role === "user");
-  return [
-    ...recentTurns,
-    {
-      role: "assistant",
-      text: buildWelcomeBackMessage(profile, lastUser?.text || "", focus),
-    },
-  ];
+function buildResumeMessages(sessions: ChatSession[]): Msg[] {
+  return extractRecentExchange(sessions);
 }
 
-function extractRecentTurns(sessions: ChatSession[]) {
+function extractRecentExchange(sessions: ChatSession[]) {
   const latestSession = sessions.find((session) => Array.isArray(session.messages) && session.messages.some((message) => message?.text));
   if (!latestSession?.messages) return [];
-  return latestSession.messages
+  const messages = latestSession.messages
     .map(normalizeResumeMessage)
-    .filter((message): message is Msg => Boolean(message))
-    .slice(-4);
+    .filter((message): message is Msg => Boolean(message));
+
+  for (let index = messages.length - 2; index >= 0; index -= 1) {
+    if (messages[index].role === "user" && messages[index + 1]?.role === "assistant") {
+      return [messages[index], messages[index + 1]];
+    }
+  }
+  return [];
 }
 
 function normalizeResumeMessage(message: SavedChatMessage): Msg | null {
@@ -434,29 +428,6 @@ function normalizeResumeFixes(value: unknown): TutorFix[] {
     if (fixes.length >= 3) break;
   }
   return fixes;
-}
-
-function learningFocus(profile: LearnerProfile) {
-  const insights = profile.memory?.learningInsights || [];
-  return [...insights]
-    .filter((item) => item?.text)
-    .sort((a, b) => Number(b.strength || 0) - Number(a.strength || 0) || Number(b.evidenceCount || 0) - Number(a.evidenceCount || 0))
-    .map((item) => cleanResumeText(item.text, 70))
-    .filter(Boolean)
-    .slice(0, 2);
-}
-
-function buildWelcomeBackMessage(profile: LearnerProfile, lastUserText: string, focus: string[]) {
-  const lastLine = lastUserText
-    ? `Last time, you were saying: "${cleanResumeText(lastUserText, 120)}".`
-    : "Let's continue from your recent practice.";
-  const focusLine = focus.length ? `Today, let's keep an ear on ${focus.join(" and ")}.` : "";
-  return [
-    `Welcome back, ${profile.displayName}.`,
-    lastLine,
-    focusLine,
-    "What would you like to continue with?",
-  ].filter(Boolean).join(" ");
 }
 
 function cleanResumeText(value: unknown, maxLength: number) {
