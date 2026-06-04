@@ -549,7 +549,7 @@ export default function VoiceTutor({
   const renderFeedback = (m: Msg): string[] => [
     ...(m.fixes?.length ? m.fixes.map(formatFixLine) : []),
     !m.fixes?.length && m.correction && `Correction: ${m.correction}`,
-    !m.fixes?.length && m.explanation && `Note: ${m.explanation}`,
+    m.explanation && `Note: ${m.explanation}`,
   ].filter((line): line is string => Boolean(line));
 
   return (

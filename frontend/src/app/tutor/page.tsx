@@ -80,7 +80,8 @@ export default function TutorPage() {
   const [loginPin, setLoginPin] = useState("");
   const [createName, setCreateName] = useState("");
   const [createPin, setCreatePin] = useState("");
-  const [createGoal, setCreateGoal] = useState("");
+  const [showLoginPin, setShowLoginPin] = useState(false);
+  const [showCreatePin, setShowCreatePin] = useState(false);
   const [profileError, setProfileError] = useState("");
   const [profileBusy, setProfileBusy] = useState(false);
   const [resumeStatus, setResumeStatus] = useState<ResumeStatus>("idle");
@@ -90,7 +91,7 @@ export default function TutorPage() {
   const renderFeedback = (m: Msg): string[] => [
     ...(m.fixes?.length ? m.fixes.map(formatFixLine) : []),
     !m.fixes?.length && m.correction && `Correction: ${m.correction}`,
-    !m.fixes?.length && m.explanation && `Note: ${m.explanation}`,
+    m.explanation && `Note: ${m.explanation}`,
   ].filter((line): line is string => Boolean(line));
 
   const loadProfiles = useCallback(async () => {
@@ -142,7 +143,6 @@ export default function TutorPage() {
         body: JSON.stringify({
           displayName: createName,
           pin: createPin,
-          learningGoal: createGoal,
         }),
       });
       const data = await response.json();
@@ -150,7 +150,7 @@ export default function TutorPage() {
       setProfiles((current) => [data, ...current.filter((profile) => profile._id !== data._id)]);
       setCreateName("");
       setCreatePin("");
-      setCreateGoal("");
+      setShowCreatePin(false);
       startProfile(data);
     } catch (error) {
       setProfileError(error instanceof Error ? error.message : "Could not create profile");
@@ -164,6 +164,7 @@ export default function TutorPage() {
     setSelectedProfile(profile);
     setActiveProfileId(profile._id);
     setLoginPin("");
+    setShowLoginPin(false);
     setSessionId(null);
     setMessages([]);
     setResumeStatus("loading");
@@ -202,10 +203,6 @@ export default function TutorPage() {
     }
   }
 
-  function pinValue(value: string) {
-    return value.replace(/\D/g, "").slice(0, 4);
-  }
-
   if (!selectedProfile) {
     return (
       <div style={{ padding: '27px 0', maxWidth: 560 }}>
@@ -214,34 +211,28 @@ export default function TutorPage() {
         <section style={{ marginBottom: '34px' }}>
           <label style={labelStyle}>Existing learner</label>
           {profiles.length > 0 ? (
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '12px', marginBottom: '14px' }}>
+            <select
+              className="bg-transparent focus:outline-none"
+              value={activeProfileId}
+              onChange={(event) => setActiveProfileId(event.target.value)}
+              style={{ ...selectLearnerStyle, marginBottom: '14px' }}
+            >
               {profiles.map((profile) => (
-                <button
-                  key={profile._id}
-                  onClick={() => setActiveProfileId(profile._id)}
-                  className="hover:opacity-60"
-                  style={{
-                    fontSize: '14px',
-                    paddingBottom: '2px',
-                    borderBottom: activeProfileId === profile._id ? '1.5px solid currentColor' : '1.5px solid transparent',
-                  }}
-                >
+                <option key={profile._id} value={profile._id}>
                   {profile.displayName}
-                </button>
+                </option>
               ))}
-            </div>
+            </select>
           ) : (
             <p style={{ fontSize: '13px', opacity: 0.45, marginBottom: '14px' }}>No saved learners yet.</p>
           )}
 
           <form onSubmit={loginProfile} style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
-            <input
-              className="bg-transparent focus:outline-none"
-              inputMode="numeric"
-              placeholder="4-digit PIN"
+            <PinInput
               value={loginPin}
-              onChange={(event) => setLoginPin(pinValue(event.target.value))}
-              style={inputStyle}
+              visible={showLoginPin}
+              onChange={setLoginPin}
+              onToggle={() => setShowLoginPin((value) => !value)}
             />
             <button
               className="hover:opacity-60 disabled:opacity-30"
@@ -264,20 +255,12 @@ export default function TutorPage() {
               onChange={(event) => setCreateName(event.target.value)}
               style={inputStyle}
             />
-            <input
-              className="bg-transparent focus:outline-none"
-              inputMode="numeric"
-              placeholder="4-digit PIN"
+            <PinInput
               value={createPin}
-              onChange={(event) => setCreatePin(pinValue(event.target.value))}
-              style={inputStyle}
-            />
-            <input
-              className="bg-transparent focus:outline-none"
-              placeholder="Goal, e.g., daily conversation"
-              value={createGoal}
-              onChange={(event) => setCreateGoal(event.target.value)}
-              style={inputStyle}
+              visible={showCreatePin}
+              onChange={setCreatePin}
+              onToggle={() => setShowCreatePin((value) => !value)}
+              fullWidth
             />
             <button
               className="hover:opacity-60 disabled:opacity-30"
@@ -411,7 +394,7 @@ function normalizeResumeMessage(message: SavedChatMessage): Msg | null {
     role: message.role,
     text,
     fixes,
-    explanation: fixes.length ? cleanResumeText(message.explanation, 80) : "",
+    explanation: cleanResumeText(message.explanation, 360),
   };
 }
 
@@ -441,6 +424,59 @@ function formatFixLine(fix: TutorFix) {
   return `Fix: ${fix.original} -> ${fix.corrected}${note}`;
 }
 
+function PinInput({
+  value,
+  visible,
+  onChange,
+  onToggle,
+  fullWidth = false,
+}: {
+  value: string;
+  visible: boolean;
+  onChange: (value: string) => void;
+  onToggle: () => void;
+  fullWidth?: boolean;
+}) {
+  return (
+    <div style={{ ...pinInputWrapStyle, width: fullWidth ? '100%' : '292px' }}>
+      <input
+        className="bg-transparent focus:outline-none"
+        inputMode="numeric"
+        maxLength={4}
+        placeholder="4-digit PIN"
+        type={visible ? "text" : "password"}
+        value={value}
+        onChange={(event) => onChange(pinValue(event.target.value))}
+        style={pinInputStyle}
+      />
+      <button
+        type="button"
+        aria-label={visible ? "Hide PIN" : "Show PIN"}
+        title={visible ? "Hide PIN" : "Show PIN"}
+        onClick={onToggle}
+        className="hover:opacity-60"
+        style={pinToggleStyle}
+      >
+        <EyeIcon hidden={!visible} />
+      </button>
+    </div>
+  );
+}
+
+function EyeIcon({ hidden }: { hidden: boolean }) {
+  return (
+    <svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z" />
+      <circle cx="12" cy="12" r="2.5" />
+      {hidden && <path d="M4 4l16 16" />}
+    </svg>
+  );
+}
+
+function pinValue(value: string) {
+  return value.replace(/\D/g, "").slice(0, 4);
+}
+
 const labelStyle: React.CSSProperties = {
   display: 'block',
   fontSize: '12px',
@@ -454,4 +490,35 @@ const inputStyle: React.CSSProperties = {
   paddingBottom: '4px',
   fontSize: '14px',
   minWidth: '0',
+};
+
+const selectLearnerStyle: React.CSSProperties = {
+  border: '1px solid rgba(128,128,128,0.22)',
+  borderRadius: '4px',
+  padding: '7px 34px 7px 10px',
+  fontSize: '14px',
+  minWidth: '160px',
+};
+
+const pinInputWrapStyle: React.CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  borderBottom: '1px solid rgba(128,128,128,0.2)',
+  maxWidth: '100%',
+};
+
+const pinInputStyle: React.CSSProperties = {
+  flex: 1,
+  minWidth: 0,
+  paddingBottom: '4px',
+  fontSize: '14px',
+};
+
+const pinToggleStyle: React.CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  width: '28px',
+  height: '28px',
+  opacity: 0.55,
 };

@@ -264,24 +264,25 @@ function updatePracticeMemory(memory: any, payload: any, currentLevel: string) {
   const fixes = cleanFixes(payload.fixes);
   const correction = cleanString(payload.correction, 1200);
   const rewrite = cleanString(payload.rewrite, 1200);
-  const explanation = cleanString(payload.explanation, 120);
+  const explanation = cleanString(payload.explanation, 700);
   const fluencyFeedback = cleanString(payload.fluencyFeedback, 160);
   const targetPhraseFeedback = cleanString(payload.targetPhraseFeedback, 160);
   const fixSummary = formatFixes(fixes);
   const correctionSummary = fixSummary || correction;
+  const memoryExplanation = summarizeExplanationForMemory(explanation, fixes);
   const correctionIsUseful = fixes.length > 0 || isMeaningfulCorrection(userMessage, correction, explanation, assistantReply);
   const now = new Date();
 
   const recurringErrors = appendCapped(
     cleanMemoryList(memory.recurringErrors || []),
     correctionIsUseful
-      ? `${userMessage || "Recent utterance"} -> ${correctionSummary}${explanation ? ` (${explanation})` : ""}`
+      ? `${userMessage || "Recent utterance"} -> ${correctionSummary}${memoryExplanation ? ` (${memoryExplanation})` : ""}`
       : "",
     10
   );
   const usefulPhrases = appendCapped(cleanMemoryList(memory.usefulPhrases || []), correctionIsUseful ? rewrite : "", 10);
   const recentTopics = appendCapped(memory.recentTopics || [], userMessage, 12);
-  const lastFeedback = [correctionIsUseful ? explanation : "", correctionIsUseful ? fluencyFeedback : "", correctionIsUseful ? targetPhraseFeedback : ""]
+  const lastFeedback = [correctionIsUseful ? memoryExplanation : "", correctionIsUseful ? fluencyFeedback : "", correctionIsUseful ? targetPhraseFeedback : ""]
     .filter(Boolean)
     .slice(0, 6);
   const learningInsights = updateLearningInsights(memory.learningInsights || [], {
@@ -290,13 +291,13 @@ function updatePracticeMemory(memory: any, payload: any, currentLevel: string) {
     correction: correctionSummary,
     fixes,
     rewrite,
-    explanation,
+    explanation: memoryExplanation,
     now,
   });
   const episodicNotes = updateEpisodicNotes(memory.episodicNotes || [], userMessage, now);
   const levelEvidence = appendCapped(
     cleanLevelEvidence(memory.levelEvidence || []),
-    buildLevelEvidence(userMessage, correctionIsUseful, explanation),
+    buildLevelEvidence(userMessage, correctionIsUseful, memoryExplanation),
     12
   );
 
@@ -355,6 +356,15 @@ function cleanFixes(value: unknown) {
 
 function formatFixes(fixes: Array<{ original: string; corrected: string; note?: string }>) {
   return fixes.map((fix) => `${fix.original} -> ${fix.corrected}`).join("; ");
+}
+
+function summarizeExplanationForMemory(explanation: string, fixes: Array<{ note?: string }>) {
+  const notes = fixes
+    .map((fix) => cleanString(fix.note, 60))
+    .filter(Boolean);
+  const uniqueNotes = [...new Set(notes)];
+  if (uniqueNotes.length) return uniqueNotes.slice(0, 3).join(", ");
+  return trimWords(explanation, 14);
 }
 
 function cleanStringArray(value: unknown, maxItems: number, maxLength: number) {
@@ -546,6 +556,11 @@ function normalizeLevel(value: string) {
 
 function countWords(value: string) {
   return value.match(/[A-Za-z]+(?:'[A-Za-z]+)?/g)?.length || 0;
+}
+
+function trimWords(value: string, maxWords: number) {
+  const words = value.split(/\s+/).filter(Boolean);
+  return words.length > maxWords ? words.slice(0, maxWords).join(" ") : value;
 }
 
 function normalizeText(value: string) {

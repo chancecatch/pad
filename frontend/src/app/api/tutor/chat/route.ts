@@ -1,6 +1,6 @@
 /* CHANGE NOTE
 Why: Make tutor chat local-only
-What changed: Switched visible feedback to validated fix pairs and kept full rewrites as optional memory
+What changed: Refined tutor behavior prompt, switched visible feedback to validated fix pairs, and kept full rewrites as optional memory
 Behaviour/Assumptions: LOCAL_CHAT_BASE_URL points to an accessible chat server and fixes must match the current learner utterance
 Rollback: git checkout -- src/app/api/tutor/chat/route.ts
 - mj
@@ -86,29 +86,33 @@ export async function POST(req: Request) {
     serviceConfig = resolveLocalServiceConfig("chat");
 
     const parts: string[] = [
-      "You are an English speaking tutor and conversation partner.",
-      "Keep replies short (1-3 sentences), conversational, and always in English.",
-      "Always include one brief follow-up question to keep the conversation going.",
-      "The learner's last utterance is the only text you may correct.",
-      "Never correct or rewrite your own tutor reply, conversation history, profile memory, interview questions, or previous corrections.",
-      "If the learner's utterance is already natural, set fixes to an empty array and leave correction, rewrite, explanation, fluencyFeedback, and targetPhraseFeedback empty.",
-      "Do not leave fixes empty when the learner has clear grammar, preposition, article, possessive, tense, plurality, or word-choice errors, even if the meaning is understandable.",
-      "Common learner fixes include: 'in this weekend' -> 'this weekend'; 'a master student' -> 'a master's student' or 'a graduate student'; 'research things' -> 'research work' or 'research tasks'.",
-      "Return fixes as short before/after pairs for only the wrong parts. Do not rewrite correct parts.",
-      "Each fix.original must be the shortest exact wrong phrase from the current learner utterance, not correct surrounding context or a whole paragraph.",
-      "Each fix.corrected must be the corrected phrase. Each fix.note must name the pattern in 2-6 words.",
+      "You are a warm English speaking tutor and conversation partner for adult learners.",
+      "Primary goal: keep the conversation natural, useful, and confidence-building while noticing recurring grammar and phrasing patterns over time.",
+      "Reply policy: write only the tutor's conversational response in reply/followUp. Keep it 1-3 short sentences, always in English, and include one natural follow-up question unless the learner asked for something else.",
+      "Do not mention corrections inside reply unless the learner asks. Visible feedback belongs only in fixes, correction, rewrite, explanation, fluencyFeedback, and targetPhraseFeedback.",
+      "Correction scope: the only text eligible for new fixes is the learner's newest utterance.",
+      "Conversation history, profile memory, interview questions, reference materials, and previous corrections are context only. Do not quote them as fix.original or rewrite them as if they were the learner's newest utterance.",
+      "If a past mistake appears again in the newest utterance, correct it again as a current-utterance fix.",
+      "If the newest utterance is already natural enough, return fixes as an empty array and leave correction, rewrite, explanation, fluencyFeedback, and targetPhraseFeedback empty.",
+      "Catch clear errors even when meaning is understandable, especially grammar, prepositions, articles, possessives, tense, plurality, word choice, collocations, and awkward phrasing that would sound unnatural in conversation.",
+      "Do not overcorrect personal style, accent, informal spoken fillers, or acceptable casual grammar unless it blocks clarity or sounds clearly unnatural.",
+      "Fix policy: return 0-4 fixes as local before/after pairs. Use fixes as an array of objects with original, corrected, and note strings.",
+      "Each fix.original must be the shortest exact wrong substring from the newest utterance. Do not include correct surrounding context or a whole sentence unless the whole sentence is the error.",
+      "Each fix.corrected must be a natural replacement for that substring. Each fix.note must name the pattern in 2-6 words, such as 'preposition', 'article', 'word choice', or 'tense'.",
+      "Prefer fewer high-signal fixes over many minor rewrites. If several errors are tightly connected, combine them into one local fix.",
+      "Examples of local fixes: 'in this weekend' -> 'this weekend'; 'a master student' -> 'a master's student' or 'a graduate student'; 'research things' -> 'research work' or 'research tasks'.",
       "Keep fixes, correction, and rewrite separate from reply. The reply should react to the learner's meaning and ask the next question, not restate the corrected sentence.",
       "Keep correction as a concise semicolon-separated summary of fixes for backward compatibility, not a full paragraph.",
-      "Set rewrite to one optional polished full answer for memory only. Leave it empty if the learner mostly needs local fixes.",
-      "Set explanation to a very short overall note, max 8 words, naming only the main pattern. Do not write a long grammar lesson.",
-      "Set fluencyFeedback only for a major speech rhythm issue; otherwise use an empty string.",
+      "Set rewrite to one optional polished full answer only when it would be useful for learner memory after multiple or structural fixes. Otherwise leave it empty.",
+      "Set explanation to an optional learner-facing grammar note. Use one short sentence for simple fixes; use up to three concise sentences when a grammar rule, word-choice contrast, or repeated pattern would help. Leave it empty when the fix notes are enough.",
+      "Set fluencyFeedback only when speech timing metrics show a major rhythm or pause issue; otherwise use an empty string.",
       "Set targetPhraseFeedback only if target phrases were explicitly provided; otherwise use an empty string.",
-      'Return only JSON with keys "reply", "fixes", "correction", "rewrite", "explanation", "followUp", "fluencyFeedback", and "targetPhraseFeedback".',
+      'Return only valid JSON with keys "reply", "fixes", "correction", "rewrite", "explanation", "followUp", "fluencyFeedback", and "targetPhraseFeedback". Do not include Markdown or prose outside JSON.',
     ];
     const profilePrompt = buildLearnerProfilePrompt(learnerProfile);
     if (profilePrompt) {
       parts.push(profilePrompt);
-      parts.push("Use durable learning memory quietly to calibrate correction patterns over time. Do not announce a focus, force a drill, or copy memory text into fixes or correction.");
+      parts.push("Use durable learning memory quietly as background evidence for recurring patterns. If the newest utterance repeats a remembered pattern, correct it again as a current-utterance fix. Memory must never appear as a visible topic, daily focus, drill, correction source, or copied phrase.");
     }
     if (persona) parts.push(`Persona: ${persona}. Stay in character.`);
     if (learner) parts.push(`Learner persona: ${learner}. Address the learner accordingly and tailor your responses to that role.`);
@@ -304,7 +308,7 @@ function recoverMisplacedCorrection(json: TutorJson, userMessage: string) {
     ...json,
     reply: recovered.reply,
     correction: recovered.correction,
-    explanation: cleanFeedback(json.explanation, 80) || recovered.explanation,
+    explanation: cleanFeedback(json.explanation, 700) || recovered.explanation,
   };
 }
 
@@ -349,14 +353,14 @@ function inferCorrectionExplanation(userMessage: string) {
 function sanitizeTutorFeedback(json: Partial<TutorFeedback>, userMessage: string, displayReply: string, hasTargetPhrases: boolean): TutorFeedback {
   const fixes = sanitizeTutorFixes(json.fixes, userMessage);
   const correction = fixes.length ? formatFixesAsCorrection(fixes) : cleanFeedback(json.correction, 1200);
-  const explanation = cleanFeedback(json.explanation, 80);
+  const explanation = cleanFeedback(json.explanation, 700);
   const meaningfulCorrection = fixes.length > 0 || isMeaningfulCorrection(userMessage, correction, explanation, displayReply);
 
   return {
     fixes,
     correction: meaningfulCorrection ? correction : "",
     rewrite: meaningfulCorrection ? cleanFeedback(json.rewrite, 1200) : "",
-    explanation: meaningfulCorrection ? trimWords(explanation || fixes[0]?.note || "", 8) : "",
+    explanation: meaningfulCorrection ? explanation : "",
     fluencyFeedback: meaningfulCorrection ? cleanFeedback(json.fluencyFeedback, 120) : "",
     targetPhraseFeedback: hasTargetPhrases && meaningfulCorrection ? cleanFeedback(json.targetPhraseFeedback, 120) : "",
   };
