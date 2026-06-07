@@ -125,6 +125,9 @@ export default function VoiceTutor({
 }: Props) {
   const [pendingAudioUrl, setPendingAudioUrl] = useState<string | null>(null);
   const [lastTutorAudioUrl, setLastTutorAudioUrl] = useState<string | null>(null);
+  const [lastUserPracticeText, setLastUserPracticeText] = useState("");
+  const [lastUserPracticeAudioUrl, setLastUserPracticeAudioUrl] = useState<string | null>(null);
+  const [userPracticeAudioBusy, setUserPracticeAudioBusy] = useState(false);
   const [messages, setMessages] = useState<Msg[]>([]);
   const [recording, setRecording] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -137,6 +140,7 @@ export default function VoiceTutor({
   const playbackAudioRef = useRef<HTMLAudioElement | null>(null);
   const playbackUnlockedRef = useRef(false);
   const playbackUnlockPromiseRef = useRef<Promise<void> | null>(null);
+  const userPracticeAudioCacheKeyRef = useRef("");
   const levelFrameRef = useRef<number | null>(null);
   const maxInputLevelRef = useRef(0);
   const inputMeterAvailableRef = useRef(false);
@@ -264,7 +268,10 @@ export default function VoiceTutor({
       const data = await r.json();
       if (!r.ok) throw buildTutorApiError(data, "Speech recognition failed", "stt");
       const text = data?.text?.trim?.() ?? "";
-      if (text) await sendToChat(text, data?.speechMetrics ?? null);
+      if (text) {
+        setUserPracticeText(text);
+        await sendToChat(text, data?.speechMetrics ?? null);
+      }
     } catch (error) {
       showTutorError(error);
     } finally {
@@ -529,6 +536,15 @@ export default function VoiceTutor({
     setBusy(next);
   }
 
+  function setUserPracticeText(text: string) {
+    const cleanText = text.trim();
+    if (!cleanText) return;
+    if (lastUserPracticeAudioUrl) URL.revokeObjectURL(lastUserPracticeAudioUrl);
+    userPracticeAudioCacheKeyRef.current = "";
+    setLastUserPracticeAudioUrl(null);
+    setLastUserPracticeText(cleanText);
+  }
+
   function getPlaybackAudio() {
     if (!playbackAudioRef.current) {
       const audio = new Audio();
@@ -536,6 +552,41 @@ export default function VoiceTutor({
       playbackAudioRef.current = audio;
     }
     return playbackAudioRef.current;
+  }
+
+  async function playUserPracticeAudio() {
+    const text = lastUserPracticeText.trim();
+    if (!text || busyRef.current || userPracticeAudioBusy) return;
+
+    await unlockPlaybackAudio();
+    const cacheKey = `${selectedVoice}\n${text}`;
+    if (lastUserPracticeAudioUrl && userPracticeAudioCacheKeyRef.current === cacheKey) {
+      await playTutorAudio(lastUserPracticeAudioUrl);
+      return;
+    }
+
+    setUserPracticeAudioBusy(true);
+    try {
+      const response = await fetch("/api/tutor/tts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text, voice: selectedVoice }),
+      });
+      if (!response.ok) {
+        const message = await readErrorMessage(response);
+        throw new Error(message || "Tutor voice failed");
+      }
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      if (lastUserPracticeAudioUrl) URL.revokeObjectURL(lastUserPracticeAudioUrl);
+      userPracticeAudioCacheKeyRef.current = cacheKey;
+      setLastUserPracticeAudioUrl(url);
+      await playTutorAudio(url);
+    } catch (error) {
+      showTutorError(error);
+    } finally {
+      setUserPracticeAudioBusy(false);
+    }
   }
 
   function buildTutorApiError(data: unknown, fallback: string, scope: string) {
@@ -599,7 +650,8 @@ export default function VoiceTutor({
     void unlockPlaybackAudio();
   }
 
-  const canPlay = !busy && (!!pendingAudioUrl || !!lastTutorAudioUrl);
+  const canPlay = !busy && !userPracticeAudioBusy && (!!pendingAudioUrl || !!lastTutorAudioUrl);
+  const canPlayUserPractice = !busy && !userPracticeAudioBusy && Boolean(lastUserPracticeText.trim());
   const shouldShowMicDiagnostics = recording || Boolean(micTrackStatus) || Boolean(micNotice);
   const renderFeedback = (m: Msg): string[] => [
     ...(m.fixes?.length ? m.fixes.map(formatFixLine) : []),
@@ -661,6 +713,17 @@ export default function VoiceTutor({
         <span style={{ opacity: 0.15 }}>·</span>
 
         <button
+          onClick={playUserPracticeAudio}
+          disabled={!canPlayUserPractice}
+          title="Play your last sentence with the local voice model"
+          className="hover:opacity-60 disabled:opacity-30"
+        >
+          mine
+        </button>
+
+        <span style={{ opacity: 0.15 }}>·</span>
+
+        <button
           onClick={() => {
             primePlaybackAudio();
             setShowTypeBox((v) => !v);
@@ -676,7 +739,7 @@ export default function VoiceTutor({
           type
         </button>
 
-        {busy && <span style={{ opacity: 0.35, fontSize: '12px', marginLeft: '8px' }}>processing…</span>}
+        {(busy || userPracticeAudioBusy) && <span style={{ opacity: 0.35, fontSize: '12px', marginLeft: '8px' }}>processing…</span>}
       </div>
 
       <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px', opacity: 0.55 }}>
@@ -738,6 +801,7 @@ export default function VoiceTutor({
             if (!t || busy) return;
             primePlaybackAudio();
             setManualText("");
+            setUserPracticeText(t);
             await sendToChat(t);
           }}
         >
