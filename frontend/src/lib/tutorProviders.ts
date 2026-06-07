@@ -1,7 +1,7 @@
 /* CHANGE NOTE
 Why: Remove hosted API fallback from the tutor and make local services the only runtime
 What changed: Centralized local service config, endpoint helpers, error formatting, tutor JSON/fix parsing, and speech timing helpers
-Behaviour/Assumptions: Every tutor service requires a local base URL
+Behaviour/Assumptions: Every tutor service requires a local base URL; user-facing errors hide local details and keep admin trace IDs in logs
 Rollback: git checkout -- src/lib/tutorProviders.ts
 - mj
 */
@@ -46,6 +46,14 @@ const LOCAL_MODEL_DEFAULTS: Record<TutorService, string> = {
   stt: "Systran/faster-distil-whisper-large-v3",
   chat: "qwen3:30b-a3b-instruct-2507-q4_K_M",
   tts: "kokoro",
+};
+
+const TUTOR_USER_MESSAGE = "The tutor hit a temporary error. Please try again in a moment.";
+
+const LOCAL_SERVICE_USER_MESSAGES: Record<TutorService, string> = {
+  stt: TUTOR_USER_MESSAGE,
+  chat: TUTOR_USER_MESSAGE,
+  tts: TUTOR_USER_MESSAGE,
 };
 
 export class TutorServiceError extends Error {
@@ -99,37 +107,69 @@ export function localServiceHeaders(config: TutorServiceConfig, extra?: HeadersI
 }
 
 export function tutorErrorResponse(error: unknown, fallbackCode: string, fallbackStatus = 500): Response {
+  const errorId = createTutorErrorId(error instanceof TutorServiceError ? error.service : undefined);
+  const details = getErrorMessage(error);
   if (error instanceof TutorServiceError) {
-    return Response.json(
-      {
-        error: error.code,
-        message: error.message,
-        service: error.service,
-      },
-      { status: error.status }
-    );
+    const body: Record<string, unknown> = {
+      error: error.code,
+      message: TUTOR_USER_MESSAGE,
+      service: error.service,
+      errorId,
+    };
+    if (process.env.TUTOR_EXPOSE_ERROR_DETAILS === "1") body.adminDetails = { details };
+
+    console.warn("[tutor] Tutor service configuration failed", {
+      errorId,
+      code: error.code,
+      service: error.service,
+      details,
+    });
+    return Response.json(body, { status: error.status });
   }
 
-  console.error(error);
+  const body: Record<string, unknown> = {
+    error: fallbackCode,
+    message: TUTOR_USER_MESSAGE,
+    errorId,
+  };
+  if (process.env.TUTOR_EXPOSE_ERROR_DETAILS === "1") body.adminDetails = { details };
+
+  console.error("[tutor] Tutor API failed", {
+    errorId,
+    code: fallbackCode,
+    details,
+  });
   return Response.json(
-    {
-      error: fallbackCode,
-      message: "The tutor service failed. Please try again.",
-      details: getErrorMessage(error),
-    },
+    body,
     { status: fallbackStatus }
   );
 }
 
 export function localServiceErrorResponse(config: TutorServiceConfig, error: unknown): Response {
-  console.warn(`[tutor] Local ${config.label} failed: ${getErrorMessage(error)}`);
+  const errorId = createTutorErrorId(config.service);
+  const details = getErrorMessage(error);
+  const body: Record<string, unknown> = {
+    error: "local_service_unavailable",
+    message: LOCAL_SERVICE_USER_MESSAGES[config.service],
+    service: config.service,
+    errorId,
+  };
+  if (process.env.TUTOR_EXPOSE_ERROR_DETAILS === "1") {
+    body.adminDetails = {
+      baseURL: config.baseURL,
+      details,
+    };
+  }
+
+  console.warn("[tutor] Local service failed", {
+    errorId,
+    service: config.service,
+    label: config.label,
+    baseURL: config.baseURL,
+    details,
+  });
   return Response.json(
-    {
-      error: "local_service_unavailable",
-      message: `Local ${config.label} is not reachable at ${config.baseURL}. Start the local service and try again.`,
-      service: config.service,
-      details: getErrorMessage(error),
-    },
+    body,
     { status: 503 }
   );
 }
@@ -291,6 +331,13 @@ function getNumber(value: unknown) {
 function getErrorMessage(error: unknown) {
   if (error instanceof Error) return error.message;
   return typeof error === "string" ? error : "";
+}
+
+function createTutorErrorId(service?: TutorService) {
+  const random =
+    globalThis.crypto?.randomUUID?.().slice(0, 8) ||
+    Math.random().toString(36).slice(2, 10);
+  return `tutor-${service || "api"}-${Date.now().toString(36)}-${random}`;
 }
 
 function roundMetric(value: number) {

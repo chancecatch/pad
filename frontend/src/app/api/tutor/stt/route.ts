@@ -84,16 +84,17 @@ async function createTranscription(
       headers: localServiceHeaders(config),
       body: retryForm,
     });
-    if (!retryResponse.ok) throw await localResponseError(retryResponse);
+    if (!retryResponse.ok) throw await localResponseError(retryResponse, file);
     return retryResponse.json();
   }
 
   return response.json();
 }
 
-async function localResponseError(response: Response) {
+async function localResponseError(response: Response, file: File) {
   const text = await response.text();
-  return new Error(`Local speech recognition returned ${response.status}: ${text.slice(0, 500)}`);
+  const fileContext = `file=${file.name || "speech.webm"} type=${file.type || "unknown"} size=${file.size}`;
+  return new Error(`Local speech recognition returned ${response.status}: ${text.slice(0, 500)} (${fileContext})`);
 }
 
 function validateTranscription(text: string, result: unknown, clientMaxInputLevel?: number) {

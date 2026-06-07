@@ -1,7 +1,7 @@
 /* CHANGE NOTE
 Why: Keep local tutor recording and playback configurable without noisy diagnostics
 What changed: Added voice/microphone selectors, first-gesture playback unlock, and fix-pair feedback display
-Behaviour/Assumptions: Visible feedback shows wrong fragments first while full rewrite remains available for tutor memory
+Behaviour/Assumptions: Visible feedback shows wrong fragments first while full rewrite remains available for tutor memory; API error IDs stay in console diagnostics
 Rollback: git checkout -- src/components/VoiceTutor.tsx
 - mj
 */
@@ -31,6 +31,14 @@ type TutorFix = {
   original: string;
   corrected: string;
   note?: string;
+};
+type TutorApiErrorPayload = {
+  error?: string;
+  message?: string;
+  service?: string;
+  errorId?: string;
+  adminDetails?: unknown;
+  details?: unknown;
 };
 type LearnerProfile = {
   _id: string;
@@ -121,7 +129,9 @@ export default function VoiceTutor({
   const [recording, setRecording] = useState(false);
   const [busy, setBusy] = useState(false);
   const recorderRef = useRef<MediaRecorder | null>(null);
+  const busyRef = useRef(false);
   const chunksRef = useRef<BlobPart[]>([]);
+  const lastErrorRef = useRef<{ text: string; at: number } | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const playbackAudioRef = useRef<HTMLAudioElement | null>(null);
@@ -163,7 +173,7 @@ export default function VoiceTutor({
     const sid = await ensureSession();
     let userMessageSaved = false;
     onMessage?.({ role: "user", text: userText });
-    setBusy(true);
+    setTutorBusy(true);
     setMessages((m) => [...m, { role: "user", text: userText }]);
     try {
       const historyTurns = (extHistory ?? messages).map((m) => ({ role: m.role, content: m.text }));
@@ -180,7 +190,7 @@ export default function VoiceTutor({
         }),
       });
       const data = await r.json();
-      if (!r.ok) throw new Error(data?.message || data?.error || "Tutor chat failed");
+      if (!r.ok) throw buildTutorApiError(data, "Tutor chat failed", "chat");
       const reply = data?.reply ?? "";
       if (data?.learnerProfile?._id) onProfileUpdate?.(data.learnerProfile);
       const feedback = {
@@ -236,27 +246,29 @@ export default function VoiceTutor({
       }
       showTutorError(error);
     } finally {
-      setBusy(false);
+      setTutorBusy(false);
     }
   }
 
   async function handleBlob(blob: Blob, clientMaxInputLevel?: number) {
-    setBusy(true);
+    setTutorBusy(true);
     try {
       const form = new FormData();
       form.append("audio", blob, "speech.webm");
+      form.append("audioSize", String(blob.size));
+      form.append("audioType", blob.type || "unknown");
       if (typeof clientMaxInputLevel === "number") {
         form.append("clientMaxInputLevel", String(clientMaxInputLevel));
       }
       const r = await fetch("/api/tutor/stt", { method: "POST", body: form });
       const data = await r.json();
-      if (!r.ok) throw new Error(data?.message || data?.error || "Speech recognition failed");
+      if (!r.ok) throw buildTutorApiError(data, "Speech recognition failed", "stt");
       const text = data?.text?.trim?.() ?? "";
       if (text) await sendToChat(text, data?.speechMetrics ?? null);
     } catch (error) {
       showTutorError(error);
     } finally {
-      setBusy(false);
+      setTutorBusy(false);
     }
   }
 
@@ -287,6 +299,7 @@ export default function VoiceTutor({
   }
 
   async function startRec() {
+    if (busyRef.current || recording || recorderRef.current?.state === "recording") return;
     try {
       chunksRef.current = [];
       maxInputLevelRef.current = 0;
@@ -318,7 +331,9 @@ export default function VoiceTutor({
           : undefined;
         chunksRef.current = [];
         cleanupRecordingResources();
+        if (recorderRef.current === rec) recorderRef.current = null;
         if (blob.size === 0) {
+          setTutorBusy(false);
           showTutorError(new Error("Recording did not produce audio data. Please check browser microphone permission and try again."));
           return;
         }
@@ -342,7 +357,10 @@ export default function VoiceTutor({
   }
 
   function stopRec() {
-    recorderRef.current?.stop();
+    const recorder = recorderRef.current;
+    if (!recorder || recorder.state !== "recording") return;
+    setTutorBusy(true);
+    recorder.stop();
     setRecording(false);
   }
 
@@ -489,16 +507,26 @@ export default function VoiceTutor({
     const contentType = response.headers.get("content-type") || "";
     if (contentType.includes("application/json")) {
       const data = await response.json();
-      return data?.message || data?.error || "";
+      logTutorApiError("tts", data);
+      return getTutorApiErrorMessage(data, "");
     }
     return response.text();
   }
 
   function showTutorError(error: unknown) {
     const text = error instanceof Error ? error.message : "The tutor service failed. Please try again.";
+    const now = Date.now();
+    const lastError = lastErrorRef.current;
+    if (lastError?.text === text && now - lastError.at < 5000) return;
+    lastErrorRef.current = { text, at: now };
     const msg = { role: "assistant" as const, text };
     setMessages((m) => [...m, msg]);
     onMessage?.(msg);
+  }
+
+  function setTutorBusy(next: boolean) {
+    busyRef.current = next;
+    setBusy(next);
   }
 
   function getPlaybackAudio() {
@@ -508,6 +536,33 @@ export default function VoiceTutor({
       playbackAudioRef.current = audio;
     }
     return playbackAudioRef.current;
+  }
+
+  function buildTutorApiError(data: unknown, fallback: string, scope: string) {
+    logTutorApiError(scope, data);
+    return new Error(getTutorApiErrorMessage(data, fallback));
+  }
+
+  function getTutorApiErrorMessage(data: unknown, fallback: string) {
+    const payload = asTutorApiErrorPayload(data);
+    return payload?.message || payload?.error || fallback;
+  }
+
+  function logTutorApiError(scope: string, data: unknown) {
+    const payload = asTutorApiErrorPayload(data);
+    if (!payload?.errorId && !payload?.adminDetails && !payload?.details) return;
+    console.warn("[tutor] API error", {
+      scope,
+      error: payload.error,
+      service: payload.service,
+      errorId: payload.errorId,
+      adminDetails: payload.adminDetails,
+      details: payload.details,
+    });
+  }
+
+  function asTutorApiErrorPayload(data: unknown): TutorApiErrorPayload | null {
+    return data && typeof data === "object" ? (data as TutorApiErrorPayload) : null;
   }
 
   async function unlockPlaybackAudio() {
