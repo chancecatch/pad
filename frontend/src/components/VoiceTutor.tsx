@@ -607,17 +607,16 @@ export default function VoiceTutor({
     const text = lastUserPracticeTextRef.current.trim();
     if (!text || busyRef.current || userPracticeAudioBusy) return;
 
-    await unlockPlaybackAudio();
     const cacheKey = `${selectedVoice}\n${text}`;
     const cachedUrl = lastUserPracticeAudioUrlRef.current;
+    if (cachedUrl && userPracticeAudioCacheKeyRef.current === cacheKey) {
+      await playTutorAudio(cachedUrl);
+      return;
+    }
 
     setUserPracticeAudioBusy(true);
     try {
-      if (cachedUrl && userPracticeAudioCacheKeyRef.current === cacheKey) {
-        await playTutorAudio(cachedUrl);
-        return;
-      }
-
+      await unlockPlaybackAudio();
       const response = await fetch("/api/tutor/tts", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -673,9 +672,12 @@ export default function VoiceTutor({
     if (playbackUnlockedRef.current) return;
     if (playbackUnlockPromiseRef.current) return playbackUnlockPromiseRef.current;
     playbackUnlockPromiseRef.current = (async () => {
-      const audio = new Audio(SILENT_AUDIO_DATA_URL);
+      const audio = getPlaybackAudio();
+      audio.pause();
       audio.preload = "auto";
       audio.setAttribute("playsinline", "true");
+      audio.src = SILENT_AUDIO_DATA_URL;
+      audio.load();
       try {
         await audio.play();
         audio.pause();
@@ -760,6 +762,14 @@ export default function VoiceTutor({
       onTouchStart={primePlaybackAudio}
       style={{ display: 'flex', flexDirection: 'column', gap: compact ? '10px' : '12px' }}
     >
+      <audio
+        ref={playbackAudioRef}
+        aria-hidden="true"
+        playsInline
+        preload="auto"
+        style={{ position: 'absolute', width: 0, height: 0, opacity: 0, pointerEvents: 'none' }}
+      />
+
       {/* ── Control bar ── */}
       <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '14px', flexWrap: 'wrap' }}>
         <button
@@ -789,7 +799,6 @@ export default function VoiceTutor({
 
         <button
           onClick={async () => {
-            await unlockPlaybackAudio();
             const audioUrl = pendingAudioUrlRef.current || lastTutorAudioUrlRef.current;
             if (audioUrl) {
               try {
