@@ -1,7 +1,7 @@
 /* CHANGE NOTE
 Why: Keep local tutor recording and playback configurable without noisy diagnostics
-What changed: Added voice/microphone selectors, first-gesture playback unlock, fix-pair feedback display, and mobile-stable audio/mic reuse
-Behaviour/Assumptions: Visible feedback shows wrong fragments first while full rewrite remains available for tutor memory; mobile browsers keep one granted mic stream until unmount or mic change
+What changed: Added voice/microphone selectors, first-gesture playback unlock, fix-pair feedback display, and mobile-safe mic/audio cleanup
+Behaviour/Assumptions: Visible feedback shows wrong fragments first while full rewrite remains available for tutor memory; mobile browsers get a fresh mic stream per recording
 Rollback: git checkout -- src/components/VoiceTutor.tsx
 - mj
 */
@@ -135,8 +135,6 @@ export default function VoiceTutor({
   const lastTutorAudioUrlRef = useRef<string | null>(null);
   const lastUserPracticeTextRef = useRef("");
   const lastUserPracticeAudioUrlRef = useRef<string | null>(null);
-  const persistentMicStreamRef = useRef<MediaStream | null>(null);
-  const persistentMicStreamKeyRef = useRef("auto");
   const playbackSequenceRef = useRef(0);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const busyRef = useRef(false);
@@ -186,7 +184,7 @@ export default function VoiceTutor({
       playbackAudioRef.current?.pause();
       playbackAudioRef.current = null;
     };
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     refreshMicrophones();
@@ -237,11 +235,7 @@ export default function VoiceTutor({
       if (reply) {
         await saveMessage(sid, assistantMessage);
         try {
-          const ttsRes = await fetch("/api/tutor/tts", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ text: reply, voice: selectedVoice }),
-          });
+          const ttsRes = await fetchTutorSpeech(reply);
           if (!ttsRes.ok) {
             const message = await readErrorMessage(ttsRes);
             throw new Error(message || "Tutor voice failed");
@@ -332,7 +326,7 @@ export default function VoiceTutor({
       setInputLevel(0);
       setMicNotice("");
       setMicTrackStatus(null);
-      const { stream, notice } = await getReusablePreferredMicrophone();
+      const { stream, notice } = await openPreferredMicrophone();
       streamRef.current = stream;
       await refreshMicrophones();
       if (notice) setMicNotice(notice);
@@ -355,7 +349,7 @@ export default function VoiceTutor({
           ? roundLevel(maxInputLevelRef.current)
           : undefined;
         chunksRef.current = [];
-        cleanupRecordingResources();
+        cleanupRecordingResources({ stopStream: true });
         if (recorderRef.current === rec) recorderRef.current = null;
         if (blob.size === 0) {
           setTutorBusy(false);
@@ -433,7 +427,9 @@ export default function VoiceTutor({
     }
     audioContextRef.current?.close().catch(() => undefined);
     audioContextRef.current = null;
-    if (stopStream) stopPersistentMicStream();
+    if (stopStream) {
+      streamRef.current?.getTracks().forEach((track) => track.stop());
+    }
     streamRef.current = null;
   }
 
@@ -493,37 +489,6 @@ export default function VoiceTutor({
         notice: `The browser default is ${initialLabel}, and PAD could not auto-switch. Change macOS input to AirPods or MacBook microphone.`,
       };
     }
-  }
-
-  async function getReusablePreferredMicrophone(): Promise<{ stream: MediaStream; notice: string }> {
-    const key = getMicStreamKey();
-    const stream = persistentMicStreamRef.current;
-    if (stream && persistentMicStreamKeyRef.current === key && hasLiveAudioTrack(stream)) {
-      return { stream, notice: "" };
-    }
-
-    stopPersistentMicStream();
-    const opened = await openPreferredMicrophone();
-    persistentMicStreamRef.current = opened.stream;
-    persistentMicStreamKeyRef.current = key;
-    return opened;
-  }
-
-  function stopPersistentMicStream() {
-    const stream = persistentMicStreamRef.current;
-    if (stream) {
-      stream.getTracks().forEach((track) => track.stop());
-    }
-    persistentMicStreamRef.current = null;
-    if (streamRef.current === stream) streamRef.current = null;
-  }
-
-  function getMicStreamKey() {
-    return selectedMicId || "auto";
-  }
-
-  function hasLiveAudioTrack(stream: MediaStream) {
-    return stream.getAudioTracks().some((track) => track.readyState === "live");
   }
 
   async function ensureSession() {
@@ -615,13 +580,10 @@ export default function VoiceTutor({
     }
 
     setUserPracticeAudioBusy(true);
+    let generatedUrl: string | null = null;
     try {
-      await unlockPlaybackAudio();
-      const response = await fetch("/api/tutor/tts", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text, voice: selectedVoice }),
-      });
+      void unlockPlaybackAudio();
+      const response = await fetchTutorSpeech(text);
       if (!response.ok) {
         const message = await readErrorMessage(response);
         throw new Error(message || "Tutor voice failed");
@@ -633,11 +595,34 @@ export default function VoiceTutor({
         return;
       }
       replaceUserPracticeAudioUrl(url, cacheKey);
-      await playTutorAudio(url);
+      generatedUrl = url;
     } catch (error) {
       showTutorError(error);
     } finally {
       setUserPracticeAudioBusy(false);
+    }
+
+    if (generatedUrl) {
+      try {
+        await playTutorAudio(generatedUrl);
+      } catch (error) {
+        console.warn("[tutor] User sentence playback skipped:", error);
+      }
+    }
+  }
+
+  async function fetchTutorSpeech(text: string) {
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 45000);
+    try {
+      return await fetch("/api/tutor/tts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text, voice: selectedVoice }),
+        signal: controller.signal,
+      });
+    } finally {
+      window.clearTimeout(timeout);
     }
   }
 
@@ -679,7 +664,7 @@ export default function VoiceTutor({
       audio.src = SILENT_AUDIO_DATA_URL;
       audio.load();
       try {
-        await audio.play();
+        await withTimeout(audio.play(), 2500, "Audio unlock timed out.");
         audio.pause();
         audio.currentTime = 0;
         playbackUnlockedRef.current = true;
@@ -704,7 +689,7 @@ export default function VoiceTutor({
     audio.currentTime = 0;
     audio.load();
     try {
-      await audio.play();
+      await withTimeout(audio.play(), 5000, "Audio playback did not start.");
     } catch (error) {
       if (token !== playbackSequenceRef.current) return;
       playbackUnlockedRef.current = false;
@@ -715,6 +700,20 @@ export default function VoiceTutor({
   function primePlaybackAudio() {
     if (playbackUnlockedRef.current || playbackUnlockPromiseRef.current) return;
     void unlockPlaybackAudio();
+  }
+
+  async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string) {
+    let timeoutId: number | undefined;
+    try {
+      return await Promise.race([
+        promise,
+        new Promise<never>((_, reject) => {
+          timeoutId = window.setTimeout(() => reject(new Error(message)), timeoutMs);
+        }),
+      ]);
+    } finally {
+      if (typeof timeoutId === "number") window.clearTimeout(timeoutId);
+    }
   }
 
   function setPendingTutorAudioUrl(url: string | null) {
