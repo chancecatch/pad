@@ -1,7 +1,7 @@
 /* CHANGE NOTE
 Why: Keep local tutor recording and playback configurable without noisy diagnostics
-What changed: Added voice/microphone selectors, first-gesture playback unlock, fix-pair feedback display, corrected mine replay, and mobile-safe mic/audio cleanup
-Behaviour/Assumptions: Visible feedback shows wrong fragments first while full rewrite remains available for tutor memory and mine replay; mobile browsers get a fresh mic stream per recording
+What changed: Added voice/microphone selectors, af_alloy default voice, first-gesture playback unlock, fix-pair feedback display, corrected mine replay, and mobile-safe mic/audio cleanup
+Behaviour/Assumptions: Mine replay preserves the learner's original intent by applying fix pairs first; mobile browsers get a fresh mic stream per recording
 Rollback: git checkout -- src/components/VoiceTutor.tsx
 - mj
 */
@@ -100,8 +100,9 @@ type Props = {
   };
 };
 
-const DEFAULT_TTS_VOICE = "af_nicole";
+const DEFAULT_TTS_VOICE = "af_alloy";
 const FALLBACK_TTS_VOICES: VoiceOption[] = [
+  { id: "af_alloy", name: "af_alloy" },
   { id: "af_nicole", name: "af_nicole" },
   { id: "af_bella", name: "af_bella" },
   { id: "af_sarah", name: "af_sarah" },
@@ -1009,17 +1010,19 @@ function normalizeFixes(value: unknown): TutorFix[] {
 
 function buildCorrectedPracticeText(originalText: string, feedback: Partial<Msg>) {
   const original = cleanPracticeText(originalText);
-  const rewrite = cleanPracticeText(feedback.rewrite);
-  if (rewrite) return rewrite;
-
   const fixes = feedback.fixes ?? [];
-  if (!fixes.length) {
-    const correction = cleanPracticeText(feedback.correction);
-    return correction && !looksLikeFixSummary(correction) ? correction : original;
+  if (fixes.length) {
+    const corrected = fixes.reduce((text, fix) => replaceFirstTutorFix(text, fix), original);
+    if (corrected.trim() && corrected !== original) return corrected.trim();
   }
 
-  const corrected = fixes.reduce((text, fix) => replaceFirstTutorFix(text, fix), original);
-  return corrected.trim() || original;
+  const correction = cleanPracticeText(feedback.correction);
+  if (isLearnerPracticeCandidate(original, correction)) return correction;
+
+  const rewrite = cleanPracticeText(feedback.rewrite);
+  if (isLearnerPracticeCandidate(original, rewrite)) return rewrite;
+
+  return original;
 }
 
 function replaceFirstTutorFix(text: string, fix: TutorFix) {
@@ -1033,8 +1036,13 @@ function replaceFirstTutorFix(text: string, fix: TutorFix) {
   }
 
   const lowerIndex = text.toLowerCase().indexOf(original.toLowerCase());
-  if (lowerIndex < 0) return text;
-  return `${text.slice(0, lowerIndex)}${corrected}${text.slice(lowerIndex + original.length)}`;
+  if (lowerIndex >= 0) {
+    return `${text.slice(0, lowerIndex)}${corrected}${text.slice(lowerIndex + original.length)}`;
+  }
+
+  const looseRange = findLoosePhraseRange(text, original);
+  if (!looseRange) return text;
+  return `${text.slice(0, looseRange.start)}${corrected}${text.slice(looseRange.end)}`;
 }
 
 function cleanPracticeText(value: unknown) {
@@ -1043,6 +1051,68 @@ function cleanPracticeText(value: unknown) {
 
 function looksLikeFixSummary(value: string) {
   return value.includes("->");
+}
+
+function isLearnerPracticeCandidate(original: string, candidate: string) {
+  if (!original || !candidate || looksLikeFixSummary(candidate)) return false;
+  if (looksLikeTutorReply(candidate)) return false;
+  if (normalizePracticeText(candidate) === normalizePracticeText(original)) return true;
+
+  const originalWords = significantPracticeWords(original);
+  const candidateWords = significantPracticeWords(candidate);
+  if (!originalWords.length || !candidateWords.length) return false;
+
+  const overlap = candidateWords.filter((word) => originalWords.includes(word)).length / candidateWords.length;
+  return overlap >= (originalWords.length < 2 ? 0.5 : 0.35);
+}
+
+function looksLikeTutorReply(value: string) {
+  return /^(yes|yeah|i('|\u2019)m here|i can hear you|thanks|great|nice|it sounds like|that sounds|tell me more|was it|what do you|do you mean)\b/i.test(value);
+}
+
+function significantPracticeWords(value: string) {
+  const stop = new Set(["the", "a", "an", "and", "or", "to", "for", "of", "in", "on", "is", "are", "am", "i", "you", "it", "this", "that"]);
+  return normalizePracticeText(value).split(" ").filter((word) => word.length > 2 && !stop.has(word));
+}
+
+function normalizePracticeText(value: string) {
+  return value.toLowerCase().replace(/[^\w\s']/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function findLoosePhraseRange(text: string, phrase: string) {
+  const normalizedText = normalizePracticeTextWithMap(text);
+  const normalizedPhrase = normalizePracticeText(phrase);
+  const start = normalizedText.text.indexOf(normalizedPhrase);
+  if (start < 0) return null;
+
+  const end = start + normalizedPhrase.length - 1;
+  const sourceStart = normalizedText.map[start];
+  const sourceEnd = normalizedText.map[end] + 1;
+  if (typeof sourceStart !== "number" || typeof sourceEnd !== "number") return null;
+  return { start: sourceStart, end: sourceEnd };
+}
+
+function normalizePracticeTextWithMap(value: string) {
+  let text = "";
+  const map: number[] = [];
+
+  for (let index = 0; index < value.length; index += 1) {
+    const char = value[index];
+    if (/[\w']/i.test(char)) {
+      text += char.toLowerCase();
+      map.push(index);
+    } else if (text && text[text.length - 1] !== " ") {
+      text += " ";
+      map.push(index);
+    }
+  }
+
+  while (text.endsWith(" ")) {
+    text = text.slice(0, -1);
+    map.pop();
+  }
+
+  return { text, map };
 }
 
 function formatFixLine(fix: TutorFix) {

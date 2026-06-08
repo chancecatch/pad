@@ -1,6 +1,6 @@
 /* CHANGE NOTE
 Why: Make the tutor start from learner identity instead of per-session settings
-What changed: Added profile login, one-exchange returning context, and fix-pair visible learner feedback
+What changed: Added profile login, compact profile gate, one-exchange returning context, and fix-pair visible learner feedback
 Behaviour/Assumptions: Learner profiles persist in MongoDB and recent practice context can seed a new session
 Rollback: git checkout -- src/app/tutor/page.tsx
 - mj
@@ -205,7 +205,7 @@ export default function TutorPage() {
 
   if (!selectedProfile) {
     return (
-      <div style={{ padding: '27px 0', maxWidth: 560 }}>
+      <div style={profileGateStyle}>
         <h1 style={{ fontWeight: 700, fontSize: '16px', marginBottom: '40px' }}>Who&apos;s practicing?</h1>
 
         <section style={{ marginBottom: '34px' }}>
@@ -227,7 +227,7 @@ export default function TutorPage() {
             <p style={{ fontSize: '13px', opacity: 0.45, marginBottom: '14px' }}>No saved learners yet.</p>
           )}
 
-          <form onSubmit={loginProfile} style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+          <form onSubmit={loginProfile} style={{ display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' }}>
             <PinInput
               value={loginPin}
               visible={showLoginPin}
@@ -485,11 +485,18 @@ const labelStyle: React.CSSProperties = {
   opacity: 0.55,
 };
 
+const profileGateStyle: React.CSSProperties = {
+  padding: '27px 0',
+  maxWidth: 360,
+  width: '100%',
+};
+
 const inputStyle: React.CSSProperties = {
   borderBottom: '1px solid rgba(128,128,128,0.2)',
   paddingBottom: '4px',
   fontSize: '14px',
   minWidth: '0',
+  width: '100%',
 };
 
 const selectLearnerStyle: React.CSSProperties = {

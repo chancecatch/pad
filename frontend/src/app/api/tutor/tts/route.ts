@@ -1,7 +1,7 @@
 /* CHANGE NOTE
 Why: Make tutor speech synthesis local-only and configurable from the Tutor UI
-What changed: Removed SDK/provider fallback, added voice-list proxy, and pass selected voice to local TTS
-Behaviour/Assumptions: LOCAL_TTS_BASE_URL points to a speech synthesis endpoint; LOCAL_TTS_VOICE can select Kokoro voices
+What changed: Removed SDK/provider fallback, added voice-list proxy, and pass selected voice to local TTS with af_alloy as the default fallback
+Behaviour/Assumptions: LOCAL_TTS_BASE_URL points to a speech synthesis endpoint; LOCAL_TTS_VOICE can override the default Kokoro voice
 Rollback: git checkout -- src/app/api/tutor/tts/route.ts
 - mj
 */
@@ -19,7 +19,7 @@ export async function POST(req: Request) {
 
   try {
     const body = await req.json();
-    const { text, voice = process.env.LOCAL_TTS_VOICE || "af_nicole", instructions, speed = 1 } = (body || {}) as {
+    const { text, voice = process.env.LOCAL_TTS_VOICE || "af_alloy", instructions, speed = 1 } = (body || {}) as {
       text?: string;
       voice?: string;
       instructions?: string;
