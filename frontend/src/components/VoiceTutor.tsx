@@ -1,7 +1,7 @@
 /* CHANGE NOTE
 Why: Keep local tutor recording and playback configurable without noisy diagnostics
-What changed: Added voice/microphone selectors, first-gesture playback unlock, and fix-pair feedback display
-Behaviour/Assumptions: Visible feedback shows wrong fragments first while full rewrite remains available for tutor memory; API error IDs stay in console diagnostics
+What changed: Added voice/microphone selectors, first-gesture playback unlock, fix-pair feedback display, and mobile-stable audio/mic reuse
+Behaviour/Assumptions: Visible feedback shows wrong fragments first while full rewrite remains available for tutor memory; mobile browsers keep one granted mic stream until unmount or mic change
 Rollback: git checkout -- src/components/VoiceTutor.tsx
 - mj
 */
@@ -126,11 +126,18 @@ export default function VoiceTutor({
   const [pendingAudioUrl, setPendingAudioUrl] = useState<string | null>(null);
   const [lastTutorAudioUrl, setLastTutorAudioUrl] = useState<string | null>(null);
   const [lastUserPracticeText, setLastUserPracticeText] = useState("");
-  const [lastUserPracticeAudioUrl, setLastUserPracticeAudioUrl] = useState<string | null>(null);
+  const [, setLastUserPracticeAudioUrl] = useState<string | null>(null);
   const [userPracticeAudioBusy, setUserPracticeAudioBusy] = useState(false);
   const [messages, setMessages] = useState<Msg[]>([]);
   const [recording, setRecording] = useState(false);
   const [busy, setBusy] = useState(false);
+  const pendingAudioUrlRef = useRef<string | null>(null);
+  const lastTutorAudioUrlRef = useRef<string | null>(null);
+  const lastUserPracticeTextRef = useRef("");
+  const lastUserPracticeAudioUrlRef = useRef<string | null>(null);
+  const persistentMicStreamRef = useRef<MediaStream | null>(null);
+  const persistentMicStreamKeyRef = useRef("auto");
+  const playbackSequenceRef = useRef(0);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const busyRef = useRef(false);
   const chunksRef = useRef<BlobPart[]>([]);
@@ -162,11 +169,24 @@ export default function VoiceTutor({
 
   useEffect(() => {
     return () => {
-      cleanupRecordingResources();
+      cleanupRecordingResources({ stopStream: true });
+      const urls = new Set(
+        [
+          pendingAudioUrlRef.current,
+          lastTutorAudioUrlRef.current,
+          lastUserPracticeAudioUrlRef.current,
+        ].filter((url): url is string => Boolean(url))
+      );
+      urls.forEach(revokeObjectUrl);
+      pendingAudioUrlRef.current = null;
+      lastTutorAudioUrlRef.current = null;
+      lastUserPracticeAudioUrlRef.current = null;
+      userPracticeAudioCacheKeyRef.current = "";
+      playbackSequenceRef.current += 1;
       playbackAudioRef.current?.pause();
       playbackAudioRef.current = null;
     };
-  }, []);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     refreshMicrophones();
@@ -229,16 +249,14 @@ export default function VoiceTutor({
           const blob = await ttsRes.blob();
           const url = URL.createObjectURL(blob);
 
-          if (lastTutorAudioUrl) {
-            URL.revokeObjectURL(lastTutorAudioUrl);
-          }
-          setLastTutorAudioUrl(url);
+          setPendingTutorAudioUrl(null);
+          replaceLastTutorAudioUrl(url);
 
           try {
             await playTutorAudio(url);
-            setPendingAudioUrl(null);
+            if (pendingAudioUrlRef.current === url) setPendingTutorAudioUrl(null);
           } catch {
-            setPendingAudioUrl(url);
+            if (lastTutorAudioUrlRef.current === url) setPendingTutorAudioUrl(url);
           }
         } catch (error) {
           console.warn("[tutor] Voice playback skipped:", error);
@@ -314,7 +332,7 @@ export default function VoiceTutor({
       setInputLevel(0);
       setMicNotice("");
       setMicTrackStatus(null);
-      const { stream, notice } = await openPreferredMicrophone();
+      const { stream, notice } = await getReusablePreferredMicrophone();
       streamRef.current = stream;
       await refreshMicrophones();
       if (notice) setMicNotice(notice);
@@ -357,7 +375,7 @@ export default function VoiceTutor({
         }
       }, 1600);
     } catch (error) {
-      cleanupRecordingResources();
+      cleanupRecordingResources({ stopStream: true });
       setRecording(false);
       showTutorError(error);
     }
@@ -404,7 +422,7 @@ export default function VoiceTutor({
     tick();
   }
 
-  function cleanupRecordingResources() {
+  function cleanupRecordingResources({ stopStream = false }: { stopStream?: boolean } = {}) {
     if (levelSilenceTimerRef.current !== null) {
       window.clearTimeout(levelSilenceTimerRef.current);
       levelSilenceTimerRef.current = null;
@@ -415,7 +433,7 @@ export default function VoiceTutor({
     }
     audioContextRef.current?.close().catch(() => undefined);
     audioContextRef.current = null;
-    streamRef.current?.getTracks().forEach((track) => track.stop());
+    if (stopStream) stopPersistentMicStream();
     streamRef.current = null;
   }
 
@@ -475,6 +493,37 @@ export default function VoiceTutor({
         notice: `The browser default is ${initialLabel}, and PAD could not auto-switch. Change macOS input to AirPods or MacBook microphone.`,
       };
     }
+  }
+
+  async function getReusablePreferredMicrophone(): Promise<{ stream: MediaStream; notice: string }> {
+    const key = getMicStreamKey();
+    const stream = persistentMicStreamRef.current;
+    if (stream && persistentMicStreamKeyRef.current === key && hasLiveAudioTrack(stream)) {
+      return { stream, notice: "" };
+    }
+
+    stopPersistentMicStream();
+    const opened = await openPreferredMicrophone();
+    persistentMicStreamRef.current = opened.stream;
+    persistentMicStreamKeyRef.current = key;
+    return opened;
+  }
+
+  function stopPersistentMicStream() {
+    const stream = persistentMicStreamRef.current;
+    if (stream) {
+      stream.getTracks().forEach((track) => track.stop());
+    }
+    persistentMicStreamRef.current = null;
+    if (streamRef.current === stream) streamRef.current = null;
+  }
+
+  function getMicStreamKey() {
+    return selectedMicId || "auto";
+  }
+
+  function hasLiveAudioTrack(stream: MediaStream) {
+    return stream.getAudioTracks().some((track) => track.readyState === "live");
   }
 
   async function ensureSession() {
@@ -539,9 +588,8 @@ export default function VoiceTutor({
   function setUserPracticeText(text: string) {
     const cleanText = text.trim();
     if (!cleanText) return;
-    if (lastUserPracticeAudioUrl) URL.revokeObjectURL(lastUserPracticeAudioUrl);
-    userPracticeAudioCacheKeyRef.current = "";
-    setLastUserPracticeAudioUrl(null);
+    lastUserPracticeTextRef.current = cleanText;
+    replaceUserPracticeAudioUrl(null);
     setLastUserPracticeText(cleanText);
   }
 
@@ -549,24 +597,27 @@ export default function VoiceTutor({
     if (!playbackAudioRef.current) {
       const audio = new Audio();
       audio.preload = "auto";
+      audio.setAttribute("playsinline", "true");
       playbackAudioRef.current = audio;
     }
     return playbackAudioRef.current;
   }
 
   async function playUserPracticeAudio() {
-    const text = lastUserPracticeText.trim();
+    const text = lastUserPracticeTextRef.current.trim();
     if (!text || busyRef.current || userPracticeAudioBusy) return;
 
     await unlockPlaybackAudio();
     const cacheKey = `${selectedVoice}\n${text}`;
-    if (lastUserPracticeAudioUrl && userPracticeAudioCacheKeyRef.current === cacheKey) {
-      await playTutorAudio(lastUserPracticeAudioUrl);
-      return;
-    }
+    const cachedUrl = lastUserPracticeAudioUrlRef.current;
 
     setUserPracticeAudioBusy(true);
     try {
+      if (cachedUrl && userPracticeAudioCacheKeyRef.current === cacheKey) {
+        await playTutorAudio(cachedUrl);
+        return;
+      }
+
       const response = await fetch("/api/tutor/tts", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -578,9 +629,11 @@ export default function VoiceTutor({
       }
       const blob = await response.blob();
       const url = URL.createObjectURL(blob);
-      if (lastUserPracticeAudioUrl) URL.revokeObjectURL(lastUserPracticeAudioUrl);
-      userPracticeAudioCacheKeyRef.current = cacheKey;
-      setLastUserPracticeAudioUrl(url);
+      if (lastUserPracticeTextRef.current.trim() !== text) {
+        revokeObjectUrl(url);
+        return;
+      }
+      replaceUserPracticeAudioUrl(url, cacheKey);
       await playTutorAudio(url);
     } catch (error) {
       showTutorError(error);
@@ -619,12 +672,11 @@ export default function VoiceTutor({
   async function unlockPlaybackAudio() {
     if (playbackUnlockedRef.current) return;
     if (playbackUnlockPromiseRef.current) return playbackUnlockPromiseRef.current;
-    const audio = getPlaybackAudio();
     playbackUnlockPromiseRef.current = (async () => {
+      const audio = new Audio(SILENT_AUDIO_DATA_URL);
+      audio.preload = "auto";
+      audio.setAttribute("playsinline", "true");
       try {
-        audio.pause();
-        audio.src = SILENT_AUDIO_DATA_URL;
-        audio.load();
         await audio.play();
         audio.pause();
         audio.currentTime = 0;
@@ -639,15 +691,58 @@ export default function VoiceTutor({
   }
 
   async function playTutorAudio(url: string) {
+    const token = playbackSequenceRef.current + 1;
+    playbackSequenceRef.current = token;
     const audio = getPlaybackAudio();
     audio.pause();
-    audio.src = url;
+    audio.removeAttribute("src");
     audio.load();
-    await audio.play();
+    if (token !== playbackSequenceRef.current) return;
+    audio.src = url;
+    audio.currentTime = 0;
+    audio.load();
+    try {
+      await audio.play();
+    } catch (error) {
+      if (token !== playbackSequenceRef.current) return;
+      playbackUnlockedRef.current = false;
+      throw error;
+    }
   }
 
   function primePlaybackAudio() {
+    if (playbackUnlockedRef.current || playbackUnlockPromiseRef.current) return;
     void unlockPlaybackAudio();
+  }
+
+  function setPendingTutorAudioUrl(url: string | null) {
+    const previous = pendingAudioUrlRef.current;
+    if (previous && previous !== url && previous !== lastTutorAudioUrlRef.current) {
+      revokeObjectUrl(previous);
+    }
+    pendingAudioUrlRef.current = url;
+    setPendingAudioUrl(url);
+  }
+
+  function replaceLastTutorAudioUrl(url: string | null) {
+    const previous = lastTutorAudioUrlRef.current;
+    if (previous && previous !== url && previous !== pendingAudioUrlRef.current) {
+      revokeObjectUrl(previous);
+    }
+    lastTutorAudioUrlRef.current = url;
+    setLastTutorAudioUrl(url);
+  }
+
+  function replaceUserPracticeAudioUrl(url: string | null, cacheKey = "") {
+    const previous = lastUserPracticeAudioUrlRef.current;
+    if (previous && previous !== url) revokeObjectUrl(previous);
+    lastUserPracticeAudioUrlRef.current = url;
+    userPracticeAudioCacheKeyRef.current = url ? cacheKey : "";
+    setLastUserPracticeAudioUrl(url);
+  }
+
+  function revokeObjectUrl(url: string | null) {
+    if (url?.startsWith("blob:")) URL.revokeObjectURL(url);
   }
 
   const canPlay = !busy && !userPracticeAudioBusy && (!!pendingAudioUrl || !!lastTutorAudioUrl);
@@ -695,12 +790,14 @@ export default function VoiceTutor({
         <button
           onClick={async () => {
             await unlockPlaybackAudio();
-            const audioUrl = pendingAudioUrl || lastTutorAudioUrl;
+            const audioUrl = pendingAudioUrlRef.current || lastTutorAudioUrlRef.current;
             if (audioUrl) {
               try {
                 await playTutorAudio(audioUrl);
-              } finally {
-                if (pendingAudioUrl) setPendingAudioUrl(null);
+                if (pendingAudioUrlRef.current === audioUrl) setPendingTutorAudioUrl(null);
+              } catch (error) {
+                setPendingTutorAudioUrl(audioUrl);
+                console.warn("[tutor] Manual playback failed:", error);
               }
             }
           }}
@@ -776,7 +873,12 @@ export default function VoiceTutor({
           mic
           <select
             value={selectedMicId}
-            onChange={(event) => setSelectedMicId(event.target.value)}
+            onChange={(event) => {
+              cleanupRecordingResources({ stopStream: true });
+              setMicNotice("");
+              setMicTrackStatus(null);
+              setSelectedMicId(event.target.value);
+            }}
             onFocus={refreshMicrophones}
             disabled={recording || busy}
             style={selectStyle}
