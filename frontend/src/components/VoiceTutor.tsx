@@ -1,7 +1,7 @@
 /* CHANGE NOTE
 Why: Keep local tutor recording and playback configurable without noisy diagnostics
-What changed: Added voice/microphone selectors, first-gesture playback unlock, fix-pair feedback display, and mobile-safe mic/audio cleanup
-Behaviour/Assumptions: Visible feedback shows wrong fragments first while full rewrite remains available for tutor memory; mobile browsers get a fresh mic stream per recording
+What changed: Added voice/microphone selectors, first-gesture playback unlock, fix-pair feedback display, corrected mine replay, and mobile-safe mic/audio cleanup
+Behaviour/Assumptions: Visible feedback shows wrong fragments first while full rewrite remains available for tutor memory and mine replay; mobile browsers get a fresh mic stream per recording
 Rollback: git checkout -- src/components/VoiceTutor.tsx
 - mj
 */
@@ -223,6 +223,7 @@ export default function VoiceTutor({
         fluencyFeedback: data?.fluencyFeedback ?? "",
         targetPhraseFeedback: data?.targetPhraseFeedback ?? "",
       };
+      setUserPracticeText(buildCorrectedPracticeText(userText, feedback));
       const assistantMessage = {
         role: "assistant" as const,
         text: reply,
@@ -820,7 +821,7 @@ export default function VoiceTutor({
         <button
           onClick={playUserPracticeAudio}
           disabled={!canPlayUserPractice}
-          title="Play your last sentence with the local voice model"
+          title="Play the corrected version with the local voice model"
           className="hover:opacity-60 disabled:opacity-30"
         >
           mine
@@ -1004,6 +1005,44 @@ function normalizeFixes(value: unknown): TutorFix[] {
     if (original && corrected) fixes.push({ original, corrected, note });
   }
   return fixes;
+}
+
+function buildCorrectedPracticeText(originalText: string, feedback: Partial<Msg>) {
+  const original = cleanPracticeText(originalText);
+  const rewrite = cleanPracticeText(feedback.rewrite);
+  if (rewrite) return rewrite;
+
+  const fixes = feedback.fixes ?? [];
+  if (!fixes.length) {
+    const correction = cleanPracticeText(feedback.correction);
+    return correction && !looksLikeFixSummary(correction) ? correction : original;
+  }
+
+  const corrected = fixes.reduce((text, fix) => replaceFirstTutorFix(text, fix), original);
+  return corrected.trim() || original;
+}
+
+function replaceFirstTutorFix(text: string, fix: TutorFix) {
+  const original = cleanPracticeText(fix.original);
+  const corrected = cleanPracticeText(fix.corrected);
+  if (!text || !original || !corrected) return text;
+
+  const exactIndex = text.indexOf(original);
+  if (exactIndex >= 0) {
+    return `${text.slice(0, exactIndex)}${corrected}${text.slice(exactIndex + original.length)}`;
+  }
+
+  const lowerIndex = text.toLowerCase().indexOf(original.toLowerCase());
+  if (lowerIndex < 0) return text;
+  return `${text.slice(0, lowerIndex)}${corrected}${text.slice(lowerIndex + original.length)}`;
+}
+
+function cleanPracticeText(value: unknown) {
+  return typeof value === "string" ? value.trim().replace(/\s+/g, " ") : "";
+}
+
+function looksLikeFixSummary(value: string) {
+  return value.includes("->");
 }
 
 function formatFixLine(fix: TutorFix) {
