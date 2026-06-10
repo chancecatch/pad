@@ -1010,19 +1010,51 @@ function normalizeFixes(value: unknown): TutorFix[] {
 
 function buildCorrectedPracticeText(originalText: string, feedback: Partial<Msg>) {
   const original = cleanPracticeText(originalText);
-  const fixes = feedback.fixes ?? [];
+  const correction = cleanPracticeText(feedback.correction);
+  const rewrite = cleanPracticeText(feedback.rewrite);
+  const fixes = feedback.fixes?.length ? feedback.fixes : parseFixSummary(correction);
   if (fixes.length) {
-    const corrected = fixes.reduce((text, fix) => replaceFirstTutorFix(text, fix), original);
-    if (corrected.trim() && corrected !== original) return corrected.trim();
+    const corrected = applyTutorFixes(original, fixes);
+    if (corrected.appliedCount === fixes.length && corrected.text !== original) return corrected.text;
+    if (isLearnerPracticeCandidate(original, rewrite)) return rewrite;
+    if (corrected.appliedCount > 0 && corrected.text !== original) return corrected.text;
   }
 
-  const correction = cleanPracticeText(feedback.correction);
   if (isLearnerPracticeCandidate(original, correction)) return correction;
 
-  const rewrite = cleanPracticeText(feedback.rewrite);
   if (isLearnerPracticeCandidate(original, rewrite)) return rewrite;
 
   return original;
+}
+
+function applyTutorFixes(original: string, fixes: TutorFix[]) {
+  let text = original;
+  let appliedCount = 0;
+
+  for (const fix of fixes) {
+    const next = replaceFirstTutorFix(text, fix);
+    if (next !== text) {
+      text = next;
+      appliedCount += 1;
+    }
+  }
+
+  return { text: text.trim(), appliedCount };
+}
+
+function parseFixSummary(value: string): TutorFix[] {
+  if (!looksLikeFixSummary(value)) return [];
+  const fixes: TutorFix[] = [];
+
+  for (const part of value.split(/\s*;\s*/)) {
+    const match = part.match(/^(.+?)\s*->\s*(.+)$/);
+    if (!match) continue;
+    const original = cleanPracticeText(match[1]);
+    const corrected = cleanPracticeText(match[2]);
+    if (original && corrected) fixes.push({ original, corrected, note: "" });
+  }
+
+  return fixes;
 }
 
 function replaceFirstTutorFix(text: string, fix: TutorFix) {
@@ -1067,7 +1099,7 @@ function isLearnerPracticeCandidate(original: string, candidate: string) {
 }
 
 function looksLikeTutorReply(value: string) {
-  return /^(yes|yeah|i('|\u2019)m here|i can hear you|thanks|great|nice|it sounds like|that sounds|tell me more|was it|what do you|do you mean)\b/i.test(value);
+  return /^(yes|yeah|i('|\u2019)m here|i can hear you|thanks|great|nice|ah[, ]|oh[, ]|sure|here('|’)s|it sounds like|that sounds|that makes|that moment|tell me more|was it|what do you|do you mean)\b/i.test(value);
 }
 
 function significantPracticeWords(value: string) {

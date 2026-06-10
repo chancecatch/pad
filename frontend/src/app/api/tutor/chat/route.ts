@@ -94,6 +94,7 @@ export async function POST(req: Request) {
       "Conversation history, profile memory, interview questions, reference materials, and previous corrections are context only. Do not quote them as fix.original or rewrite them as if they were the learner's newest utterance.",
       "If a past mistake appears again in the newest utterance, correct it again as a current-utterance fix.",
       "If the newest utterance is already natural enough, return fixes as an empty array and leave correction, rewrite, explanation, fluencyFeedback, and targetPhraseFeedback empty.",
+      "For long learner turns with clear awkward phrasing, repeated fillers, tense errors, or unnatural collocations, still return 1-4 high-signal fixes; do not skip fixes just because the meaning is understandable.",
       "Catch clear errors even when meaning is understandable, especially grammar, prepositions, articles, possessives, tense, plurality, word choice, collocations, and awkward phrasing that would sound unnatural in conversation.",
       "Do not overcorrect personal style, accent, informal spoken fillers, or acceptable casual grammar unless it blocks clarity or sounds clearly unnatural.",
       "Fix policy: return 0-4 fixes as local before/after pairs. Use fixes as an array of objects with original, corrected, and note strings.",
@@ -103,7 +104,7 @@ export async function POST(req: Request) {
       "Examples of local fixes: 'in this weekend' -> 'this weekend'; 'a master student' -> 'a master's student' or 'a graduate student'; 'research things' -> 'research work' or 'research tasks'.",
       "Keep fixes, correction, and rewrite separate from reply. The reply should react to the learner's meaning and ask the next question, not restate the corrected sentence.",
       "Keep correction as a concise semicolon-separated summary of fixes for backward compatibility, not a full paragraph.",
-      "Set rewrite to one optional polished full answer only when it would be useful for learner memory after multiple or structural fixes. Otherwise leave it empty.",
+      "Set rewrite to one optional polished first-person version of the learner's newest answer only when it would be useful for learner memory after multiple or structural fixes. Never put the tutor reply, praise, or a follow-up question in rewrite. Otherwise leave it empty.",
       "Set explanation to an optional learner-facing grammar note. Use one short sentence for simple fixes; use up to three concise sentences when a grammar rule, word-choice contrast, or repeated pattern would help. Leave it empty when the fix notes are enough.",
       "Set fluencyFeedback only when speech timing metrics show a major rhythm or pause issue; otherwise use an empty string.",
       "Set targetPhraseFeedback only if target phrases were explicitly provided; otherwise use an empty string.",
@@ -351,19 +352,47 @@ function inferCorrectionExplanation(userMessage: string) {
 }
 
 function sanitizeTutorFeedback(json: Partial<TutorFeedback>, userMessage: string, displayReply: string, hasTargetPhrases: boolean): TutorFeedback {
-  const fixes = sanitizeTutorFixes(json.fixes, userMessage);
+  const directFixes = sanitizeTutorFixes(json.fixes, userMessage);
+  const fixes = directFixes.length ? directFixes : sanitizeTutorFixes(parseFixSummary(json.correction), userMessage);
   const correction = fixes.length ? formatFixesAsCorrection(fixes) : cleanFeedback(json.correction, 1200);
   const explanation = cleanFeedback(json.explanation, 700);
   const meaningfulCorrection = fixes.length > 0 || isMeaningfulCorrection(userMessage, correction, explanation, displayReply);
+  const rewrite = meaningfulCorrection ? cleanLearnerRewrite(json.rewrite, userMessage, displayReply) : "";
 
   return {
     fixes,
     correction: meaningfulCorrection ? correction : "",
-    rewrite: meaningfulCorrection ? cleanFeedback(json.rewrite, 1200) : "",
+    rewrite,
     explanation: meaningfulCorrection ? explanation : "",
     fluencyFeedback: meaningfulCorrection ? cleanFeedback(json.fluencyFeedback, 120) : "",
     targetPhraseFeedback: hasTargetPhrases && meaningfulCorrection ? cleanFeedback(json.targetPhraseFeedback, 120) : "",
   };
+}
+
+function parseFixSummary(value: unknown): TutorFix[] {
+  const text = cleanFeedback(value, 1200);
+  if (!text.includes("->")) return [];
+  return text
+    .split(/\s*;\s*/)
+    .map((part) => {
+      const match = part.match(/^(.+?)\s*->\s*(.+)$/);
+      if (!match) return null;
+      return {
+        original: cleanFeedback(match[1], 220),
+        corrected: cleanFeedback(match[2], 220),
+        note: "",
+      };
+    })
+    .filter((fix): fix is TutorFix => Boolean(fix?.original && fix.corrected));
+}
+
+function cleanLearnerRewrite(value: unknown, userMessage: string, displayReply: string) {
+  const rewrite = cleanFeedback(value, 1200);
+  if (!rewrite || isNoCorrectionText(rewrite)) return "";
+  if (isTutorReplyLike(rewrite, userMessage, displayReply)) return "";
+  if (rewrite.includes("?")) return "";
+  if (!isCorrectionRelatedToCurrentMessage(userMessage, rewrite)) return "";
+  return rewrite;
 }
 
 function isMeaningfulCorrection(userMessage: string, correction: string, explanation: string, displayReply = "") {
@@ -424,7 +453,7 @@ function isTutorReplyLike(correction: string, userMessage: string, displayReply:
   const normalizedCorrection = normalizeText(correction);
   const normalizedReply = normalizeText(displayReply);
   if (normalizedReply && (normalizedReply === normalizedCorrection || normalizedReply.includes(normalizedCorrection))) return true;
-  if (/^(hi|hello|nice to meet|that sounds|sounds great|great|sure|of course|ah[, ]|okay|ok)\b/i.test(correction)) return true;
+  if (/^(hi|hello|nice to meet|that sounds|that makes|that moment|sounds great|great|sure|of course|ah[, ]|oh[, ]|okay|ok|here('|’)s)\b/i.test(correction)) return true;
   if (correction.includes("?") && /\b(what|how|any|would you|do you|want to|share|tell me)\b/i.test(correction)) return true;
 
   const userWords = significantWords(userMessage);
