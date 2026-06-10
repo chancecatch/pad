@@ -16,6 +16,7 @@ type Msg = {
   fixes?: TutorFix[];
   rewrite?: string;
   explanation?: string;
+  showRewrite?: boolean;
 };
 
 type TutorFix = {
@@ -88,6 +89,7 @@ export default function TutorPage() {
   const renderFeedback = (m: Msg): string[] => [
     ...(m.fixes?.length ? m.fixes.map(formatFixLine) : []),
     m.explanation && `Note: ${m.explanation}`,
+    m.showRewrite && m.rewrite && `Rewrite: ${m.rewrite}`,
   ].filter((line): line is string => Boolean(line));
 
   const loadProfiles = useCallback(async () => {
@@ -335,6 +337,9 @@ export default function TutorPage() {
             contextRequestRef.current += 1;
             setMessages((m) => attachFeedbackForTutorMessage(m, msg));
           }}
+          onRevealRewrite={(rewrite) => {
+            setMessages((m) => revealRewriteOnLastUser(m, rewrite));
+          }}
           hideMessages
           compact
           roleConfig={{ level: selectedProfile.level || "B1" }}
@@ -360,6 +365,17 @@ function attachFeedbackForTutorMessage(messages: Msg[], msg: Msg) {
     }
   }
   return [...next, assistantMessage];
+}
+
+function revealRewriteOnLastUser(messages: Msg[], rewrite: string) {
+  const next = [...messages];
+  for (let index = next.length - 1; index >= 0; index -= 1) {
+    if (next[index].role === "user") {
+      next[index] = { ...next[index], rewrite, showRewrite: true };
+      break;
+    }
+  }
+  return next;
 }
 
 function buildResumeMessages(sessions: ChatSession[]): Msg[] {

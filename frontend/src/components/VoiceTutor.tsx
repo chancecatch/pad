@@ -23,6 +23,7 @@ type Msg = {
   fixes?: TutorFix[];
   rewrite?: string;
   explanation?: string;
+  showRewrite?: boolean;
 };
 type TutorFix = {
   original: string;
@@ -83,6 +84,7 @@ type Props = {
   onSession?: (id: string) => void;
   history?: Msg[];
   onMessage?: (msg: Msg) => void;
+  onRevealRewrite?: (rewrite: string) => void;
   learnerProfile?: LearnerProfile | null;
   onProfileUpdate?: (profile: LearnerProfile) => void;
   hideMessages?: boolean;
@@ -115,6 +117,7 @@ export default function VoiceTutor({
   onSession,
   history: extHistory,
   onMessage,
+  onRevealRewrite,
   learnerProfile,
   onProfileUpdate,
   hideMessages = false,
@@ -579,7 +582,15 @@ export default function VoiceTutor({
   }
 
   async function playUserRewriteAudio() {
+    revealUserRewrite();
     await playUserTextAudio(lastUserRewriteTextRef);
+  }
+
+  function revealUserRewrite() {
+    const rewrite = lastUserRewriteTextRef.current.trim();
+    if (!rewrite) return;
+    setMessages((current) => revealRewriteOnLastUser(current, rewrite));
+    onRevealRewrite?.(rewrite);
   }
 
   async function playUserTextAudio(textRef: { current: string }) {
@@ -767,6 +778,7 @@ export default function VoiceTutor({
   const renderFeedback = (m: Msg): string[] => [
     ...(m.fixes?.length ? m.fixes.map(formatFixLine) : []),
     m.explanation && `Note: ${m.explanation}`,
+    m.showRewrite && m.rewrite && `Rewrite: ${m.rewrite}`,
   ].filter((line): line is string => Boolean(line));
 
   return (
@@ -839,6 +851,8 @@ export default function VoiceTutor({
         >
           mine
         </button>
+
+        <span style={{ opacity: 0.15 }}>·</span>
 
         <button
           onClick={playUserRewriteAudio}
@@ -1006,6 +1020,17 @@ function attachFeedbackToLastUser(messages: Msg[], feedback: Partial<Msg>) {
   for (let index = next.length - 1; index >= 0; index -= 1) {
     if (next[index].role === "user") {
       next[index] = { ...next[index], ...feedback };
+      break;
+    }
+  }
+  return next;
+}
+
+function revealRewriteOnLastUser(messages: Msg[], rewrite: string) {
+  const next = [...messages];
+  for (let index = next.length - 1; index >= 0; index -= 1) {
+    if (next[index].role === "user") {
+      next[index] = { ...next[index], rewrite, showRewrite: true };
       break;
     }
   }
