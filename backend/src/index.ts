@@ -88,12 +88,12 @@ app.get("/chat/sessions/:id", async (req, res) => {
 
 // Add a chat message
 app.post("/chat/sessions/:id/messages", async (req, res) => {
-  const { role, text, fixes, correction, rewrite, explanation, fluencyFeedback, targetPhraseFeedback } = req.body || {};
+  const { role, text, fixes, rewrite, explanation } = req.body || {};
   if (!role || !text) return res.status(400).json({ error: "invalid_payload" });
 
   const sess = await ChatSession.findByIdAndUpdate(
     req.params.id,
-    { $push: { messages: { role, text, fixes: cleanFixes(fixes), correction, rewrite, explanation, fluencyFeedback, targetPhraseFeedback } } },
+    { $push: { messages: { role, text, fixes: cleanFixes(fixes), rewrite, explanation } } },
     { new: true }
   );
   if (!sess) return res.status(404).json({ error: "not_found" });
@@ -262,33 +262,31 @@ function updatePracticeMemory(memory: any, payload: any, currentLevel: string) {
   const userMessage = cleanString(payload.userMessage, 320);
   const assistantReply = cleanString(payload.assistantReply, 320);
   const fixes = cleanFixes(payload.fixes);
-  const correction = cleanString(payload.correction, 1200);
   const rewrite = cleanString(payload.rewrite, 1200);
   const explanation = cleanString(payload.explanation, 700);
-  const fluencyFeedback = cleanString(payload.fluencyFeedback, 160);
-  const targetPhraseFeedback = cleanString(payload.targetPhraseFeedback, 160);
   const fixSummary = formatFixes(fixes);
-  const correctionSummary = fixSummary || correction;
+  const rewriteIsUseful = isUsefulRewrite(userMessage, rewrite, assistantReply);
+  const feedbackSummary = fixSummary || rewrite;
   const memoryExplanation = summarizeExplanationForMemory(explanation, fixes);
-  const correctionIsUseful = fixes.length > 0 || isMeaningfulCorrection(userMessage, correction, explanation, assistantReply);
+  const correctionIsUseful = fixes.length > 0 || rewriteIsUseful;
   const now = new Date();
 
   const recurringErrors = appendCapped(
     cleanMemoryList(memory.recurringErrors || []),
     correctionIsUseful
-      ? `${userMessage || "Recent utterance"} -> ${correctionSummary}${memoryExplanation ? ` (${memoryExplanation})` : ""}`
+      ? `${userMessage || "Recent utterance"} -> ${feedbackSummary}${memoryExplanation ? ` (${memoryExplanation})` : ""}`
       : "",
     10
   );
   const usefulPhrases = appendCapped(cleanMemoryList(memory.usefulPhrases || []), correctionIsUseful ? rewrite : "", 10);
   const recentTopics = appendCapped(memory.recentTopics || [], userMessage, 12);
-  const lastFeedback = [correctionIsUseful ? memoryExplanation : "", correctionIsUseful ? fluencyFeedback : "", correctionIsUseful ? targetPhraseFeedback : ""]
+  const lastFeedback = [correctionIsUseful ? memoryExplanation : ""]
     .filter(Boolean)
     .slice(0, 6);
   const learningInsights = updateLearningInsights(memory.learningInsights || [], {
     correctionIsUseful,
     userMessage,
-    correction: correctionSummary,
+    feedbackSummary,
     fixes,
     rewrite,
     explanation: memoryExplanation,
@@ -392,13 +390,13 @@ function updateLearningInsights(list: any[], payload: any) {
   const existing = cleanLearningInsights(list);
   if (!payload.correctionIsUseful) return existing.slice(0, LEARNING_INSIGHT_LIMIT);
 
-  const key = buildLearningInsightKey(payload.explanation, payload.correction);
+  const key = buildLearningInsightKey(payload.explanation, payload.feedbackSummary);
   if (!key) return existing.slice(0, LEARNING_INSIGHT_LIMIT);
 
   const text = payload.explanation
     ? cleanString(payload.explanation, 80)
-    : `Practice this pattern: ${cleanString(payload.correction, 120)}`;
-  const example = cleanString(payload.rewrite || payload.correction || payload.userMessage, 220);
+    : `Practice this pattern: ${cleanString(payload.feedbackSummary, 120)}`;
+  const example = cleanString(payload.rewrite || payload.feedbackSummary || payload.userMessage, 220);
   const previous = existing.find((item) => item.key === key);
   const updated = {
     key,
@@ -431,8 +429,8 @@ function cleanLearningInsights(list: any[]) {
     .filter((item) => item.key && item.text && isUsefulMemoryLine(item.text));
 }
 
-function buildLearningInsightKey(explanation: string, correction: string) {
-  const source = explanation && !isNoCorrectionText(explanation) ? explanation : correction;
+function buildLearningInsightKey(explanation: string, feedbackSummary: string) {
+  const source = explanation && !isNoCorrectionText(explanation) ? explanation : feedbackSummary;
   return normalizeText(cleanString(source, 120)).slice(0, 120);
 }
 
@@ -567,27 +565,27 @@ function normalizeText(value: string) {
   return value.toLowerCase().replace(/[^\w\s']/g, "").replace(/\s+/g, " ").trim();
 }
 
-function isMeaningfulCorrection(userMessage: string, correction: string, explanation: string, assistantReply: string) {
-  if (!correction) return false;
-  if (isNoCorrectionText(correction) || isNoCorrectionText(explanation)) return false;
-  const normalizedCorrection = normalizeText(correction);
-  if (!normalizedCorrection || normalizedCorrection === normalizeText(userMessage)) return false;
-  if (isTutorReplyLike(correction, userMessage, assistantReply)) return false;
+function isUsefulRewrite(userMessage: string, rewrite: string, assistantReply: string) {
+  if (!rewrite || isNoCorrectionText(rewrite)) return false;
+  const normalizedRewrite = normalizeText(rewrite);
+  if (!normalizedRewrite || normalizedRewrite === normalizeText(userMessage)) return false;
+  if (rewrite.includes("?")) return false;
+  if (isTutorReplyLike(rewrite, userMessage, assistantReply)) return false;
   return true;
 }
 
-function isTutorReplyLike(correction: string, userMessage: string, assistantReply: string) {
-  const normalizedCorrection = normalizeText(correction);
+function isTutorReplyLike(candidate: string, userMessage: string, assistantReply: string) {
+  const normalizedCandidate = normalizeText(candidate);
   const normalizedReply = normalizeText(assistantReply);
-  if (normalizedReply && (normalizedReply === normalizedCorrection || normalizedReply.includes(normalizedCorrection))) return true;
-  if (/^(hi|hello|nice to meet|that sounds|sounds great|great|sure|of course|ah[, ]|okay|ok)\b/i.test(correction)) return true;
-  if (correction.includes("?") && /\b(what|how|any|would you|do you|want to|share|tell me)\b/i.test(correction)) return true;
+  if (normalizedReply && (normalizedReply === normalizedCandidate || normalizedReply.includes(normalizedCandidate))) return true;
+  if (/^(hi|hello|nice to meet|that sounds|sounds great|great|sure|of course|ah[, ]|okay|ok)\b/i.test(candidate)) return true;
+  if (candidate.includes("?") && /\b(what|how|any|would you|do you|want to|share|tell me)\b/i.test(candidate)) return true;
 
   const userWords = significantWords(userMessage);
-  const correctionWords = significantWords(correction);
-  if (userWords.length >= 4 && correctionWords.length >= 4) {
-    const overlap = correctionWords.filter((word) => userWords.includes(word)).length / correctionWords.length;
-    if (overlap < 0.2 && correction.includes("?")) return true;
+  const candidateWords = significantWords(candidate);
+  if (userWords.length >= 4 && candidateWords.length >= 4) {
+    const overlap = candidateWords.filter((word) => userWords.includes(word)).length / candidateWords.length;
+    if (overlap < 0.2 && candidate.includes("?")) return true;
   }
   return false;
 }

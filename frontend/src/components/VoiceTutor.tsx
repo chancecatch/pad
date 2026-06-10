@@ -21,11 +21,8 @@ type Msg = {
   role: "user" | "assistant";
   text: string;
   fixes?: TutorFix[];
-  correction?: string;
   rewrite?: string;
   explanation?: string;
-  fluencyFeedback?: string;
-  targetPhraseFeedback?: string;
 };
 type TutorFix = {
   original: string;
@@ -127,6 +124,7 @@ export default function VoiceTutor({
   const [pendingAudioUrl, setPendingAudioUrl] = useState<string | null>(null);
   const [lastTutorAudioUrl, setLastTutorAudioUrl] = useState<string | null>(null);
   const [lastUserPracticeText, setLastUserPracticeText] = useState("");
+  const [lastUserRewriteText, setLastUserRewriteText] = useState("");
   const [, setLastUserPracticeAudioUrl] = useState<string | null>(null);
   const [userPracticeAudioBusy, setUserPracticeAudioBusy] = useState(false);
   const [messages, setMessages] = useState<Msg[]>([]);
@@ -135,6 +133,7 @@ export default function VoiceTutor({
   const pendingAudioUrlRef = useRef<string | null>(null);
   const lastTutorAudioUrlRef = useRef<string | null>(null);
   const lastUserPracticeTextRef = useRef("");
+  const lastUserRewriteTextRef = useRef("");
   const lastUserPracticeAudioUrlRef = useRef<string | null>(null);
   const playbackSequenceRef = useRef(0);
   const recorderRef = useRef<MediaRecorder | null>(null);
@@ -218,13 +217,11 @@ export default function VoiceTutor({
       if (data?.learnerProfile?._id) onProfileUpdate?.(data.learnerProfile);
       const feedback = {
         fixes: normalizeFixes(data?.fixes),
-        correction: data?.correction ?? "",
         rewrite: data?.rewrite ?? "",
         explanation: data?.explanation ?? "",
-        fluencyFeedback: data?.fluencyFeedback ?? "",
-        targetPhraseFeedback: data?.targetPhraseFeedback ?? "",
       };
       setUserPracticeText(buildCorrectedPracticeText(userText, feedback));
+      setUserRewriteText(feedback.rewrite);
       const assistantMessage = {
         role: "assistant" as const,
         text: reply,
@@ -560,6 +557,13 @@ export default function VoiceTutor({
     setLastUserPracticeText(cleanText);
   }
 
+  function setUserRewriteText(text: string) {
+    const cleanText = cleanPracticeText(text);
+    lastUserRewriteTextRef.current = cleanText;
+    replaceUserPracticeAudioUrl(null);
+    setLastUserRewriteText(cleanText);
+  }
+
   function getPlaybackAudio() {
     if (!playbackAudioRef.current) {
       const audio = new Audio();
@@ -571,7 +575,15 @@ export default function VoiceTutor({
   }
 
   async function playUserPracticeAudio() {
-    const text = lastUserPracticeTextRef.current.trim();
+    await playUserTextAudio(lastUserPracticeTextRef);
+  }
+
+  async function playUserRewriteAudio() {
+    await playUserTextAudio(lastUserRewriteTextRef);
+  }
+
+  async function playUserTextAudio(textRef: { current: string }) {
+    const text = textRef.current.trim();
     if (!text || busyRef.current || userPracticeAudioBusy) return;
 
     const cacheKey = `${selectedVoice}\n${text}`;
@@ -592,7 +604,7 @@ export default function VoiceTutor({
       }
       const blob = await response.blob();
       const url = URL.createObjectURL(blob);
-      if (lastUserPracticeTextRef.current.trim() !== text) {
+      if (textRef.current.trim() !== text) {
         revokeObjectUrl(url);
         return;
       }
@@ -750,10 +762,10 @@ export default function VoiceTutor({
 
   const canPlay = !busy && !userPracticeAudioBusy && (!!pendingAudioUrl || !!lastTutorAudioUrl);
   const canPlayUserPractice = !busy && !userPracticeAudioBusy && Boolean(lastUserPracticeText.trim());
+  const canPlayUserRewrite = !busy && !userPracticeAudioBusy && Boolean(lastUserRewriteText.trim());
   const shouldShowMicDiagnostics = recording || Boolean(micTrackStatus) || Boolean(micNotice);
   const renderFeedback = (m: Msg): string[] => [
     ...(m.fixes?.length ? m.fixes.map(formatFixLine) : []),
-    !m.fixes?.length && m.correction && `Correction: ${m.correction}`,
     m.explanation && `Note: ${m.explanation}`,
   ].filter((line): line is string => Boolean(line));
 
@@ -826,6 +838,15 @@ export default function VoiceTutor({
           className="hover:opacity-60 disabled:opacity-30"
         >
           mine
+        </button>
+
+        <button
+          onClick={playUserRewriteAudio}
+          disabled={!canPlayUserRewrite}
+          title="Play the full rewrite with the local voice model"
+          className="hover:opacity-60 disabled:opacity-30"
+        >
+          rewrite
         </button>
 
         <span style={{ opacity: 0.15 }}>·</span>
@@ -976,11 +997,8 @@ export default function VoiceTutor({
 function attachFeedbackToLastUser(messages: Msg[], feedback: Partial<Msg>) {
   const hasFeedback = Boolean(
     feedback.fixes?.length ||
-      feedback.correction ||
       feedback.rewrite ||
-      feedback.explanation ||
-      feedback.fluencyFeedback ||
-      feedback.targetPhraseFeedback
+      feedback.explanation
   );
   if (!hasFeedback) return messages;
 
@@ -1010,17 +1028,14 @@ function normalizeFixes(value: unknown): TutorFix[] {
 
 function buildCorrectedPracticeText(originalText: string, feedback: Partial<Msg>) {
   const original = cleanPracticeText(originalText);
-  const correction = cleanPracticeText(feedback.correction);
   const rewrite = cleanPracticeText(feedback.rewrite);
-  const fixes = feedback.fixes?.length ? feedback.fixes : parseFixSummary(correction);
+  const fixes = feedback.fixes ?? [];
   if (fixes.length) {
     const corrected = applyTutorFixes(original, fixes);
     if (corrected.appliedCount === fixes.length && corrected.text !== original) return corrected.text;
     if (isLearnerPracticeCandidate(original, rewrite)) return rewrite;
     if (corrected.appliedCount > 0 && corrected.text !== original) return corrected.text;
   }
-
-  if (isLearnerPracticeCandidate(original, correction)) return correction;
 
   if (isLearnerPracticeCandidate(original, rewrite)) return rewrite;
 
@@ -1040,21 +1055,6 @@ function applyTutorFixes(original: string, fixes: TutorFix[]) {
   }
 
   return { text: text.trim(), appliedCount };
-}
-
-function parseFixSummary(value: string): TutorFix[] {
-  if (!looksLikeFixSummary(value)) return [];
-  const fixes: TutorFix[] = [];
-
-  for (const part of value.split(/\s*;\s*/)) {
-    const match = part.match(/^(.+?)\s*->\s*(.+)$/);
-    if (!match) continue;
-    const original = cleanPracticeText(match[1]);
-    const corrected = cleanPracticeText(match[2]);
-    if (original && corrected) fixes.push({ original, corrected, note: "" });
-  }
-
-  return fixes;
 }
 
 function replaceFirstTutorFix(text: string, fix: TutorFix) {

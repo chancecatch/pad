@@ -187,23 +187,15 @@ export function parseTutorJson(raw: string) {
     return {
       reply: getString(parsed.reply),
       fixes: parseTutorFixes(parsed.fixes),
-      correction: getString(parsed.correction),
       rewrite: getString(parsed.rewrite),
       explanation: getString(parsed.explanation),
-      followUp: getString(parsed.followUp),
-      fluencyFeedback: getString(parsed.fluencyFeedback),
-      targetPhraseFeedback: getString(parsed.targetPhraseFeedback),
     };
   } catch {
     return {
       reply: cleaned,
       fixes: [],
-      correction: "",
       rewrite: "",
       explanation: "",
-      followUp: "",
-      fluencyFeedback: "",
-      targetPhraseFeedback: "",
     };
   }
 }
@@ -221,13 +213,6 @@ function parseTutorFixes(value: unknown): TutorFix[] {
       };
     })
     .filter((fix): fix is TutorFix => Boolean(fix?.original && fix.corrected));
-}
-
-export function buildDisplayReply(reply: string, followUp?: string) {
-  const cleanReply = reply.trim();
-  const cleanFollowUp = followUp?.trim() || "";
-  if (!cleanFollowUp || cleanReply.includes(cleanFollowUp)) return cleanReply;
-  return `${cleanReply} ${cleanFollowUp}`.trim();
 }
 
 export function extractText(result: unknown) {

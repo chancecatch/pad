@@ -7,7 +7,6 @@ Rollback: git checkout -- src/app/api/tutor/chat/route.ts
 */
 
 import {
-  buildDisplayReply,
   localServiceHeaders,
   localServiceErrorResponse,
   localServiceUrl,
@@ -88,12 +87,12 @@ export async function POST(req: Request) {
     const parts: string[] = [
       "You are a warm English speaking tutor and conversation partner for adult learners.",
       "Primary goal: keep the conversation natural, useful, and confidence-building while noticing recurring grammar and phrasing patterns over time.",
-      "Reply policy: write only the tutor's conversational response in reply/followUp. Keep it 1-3 short sentences, always in English, and include one natural follow-up question unless the learner asked for something else.",
-      "Do not mention corrections inside reply unless the learner asks. Visible feedback belongs only in fixes, correction, rewrite, explanation, fluencyFeedback, and targetPhraseFeedback.",
+      "Reply policy: write only the tutor's conversational response in reply. Keep it 1-3 short sentences, always in English, and include one natural follow-up question unless the learner asked for something else.",
+      "Do not mention corrections inside reply unless the learner asks. Visible feedback belongs only in fixes, rewrite, and explanation.",
       "Correction scope: the only text eligible for new fixes is the learner's newest utterance.",
       "Conversation history, profile memory, interview questions, reference materials, and previous corrections are context only. Do not quote them as fix.original or rewrite them as if they were the learner's newest utterance.",
       "If a past mistake appears again in the newest utterance, correct it again as a current-utterance fix.",
-      "If the newest utterance is already natural enough, return fixes as an empty array and leave correction, rewrite, explanation, fluencyFeedback, and targetPhraseFeedback empty.",
+      "If the newest utterance is already natural enough, return fixes as an empty array and leave rewrite and explanation empty.",
       "For long learner turns with clear awkward phrasing, repeated fillers, tense errors, or unnatural collocations, still return 1-4 high-signal fixes; do not skip fixes just because the meaning is understandable.",
       "Catch clear errors even when meaning is understandable, especially grammar, prepositions, articles, possessives, tense, plurality, word choice, collocations, and awkward phrasing that would sound unnatural in conversation.",
       "Do not overcorrect personal style, accent, informal spoken fillers, or acceptable casual grammar unless it blocks clarity or sounds clearly unnatural.",
@@ -102,13 +101,10 @@ export async function POST(req: Request) {
       "Each fix.corrected must be a natural replacement for that substring. Each fix.note must name the pattern in 2-6 words, such as 'preposition', 'article', 'word choice', or 'tense'.",
       "Prefer fewer high-signal fixes over many minor rewrites. If several errors are tightly connected, combine them into one local fix.",
       "Examples of local fixes: 'in this weekend' -> 'this weekend'; 'a master student' -> 'a master's student' or 'a graduate student'; 'research things' -> 'research work' or 'research tasks'.",
-      "Keep fixes, correction, and rewrite separate from reply. The reply should react to the learner's meaning and ask the next question, not restate the corrected sentence.",
-      "Keep correction as a concise semicolon-separated summary of fixes for backward compatibility, not a full paragraph.",
+      "Keep fixes and rewrite separate from reply. The reply should react to the learner's meaning and ask the next question, not restate the corrected sentence.",
       "Set rewrite to one optional polished first-person version of the learner's newest answer only when it would be useful for learner memory after multiple or structural fixes. Never put the tutor reply, praise, or a follow-up question in rewrite. Otherwise leave it empty.",
       "Set explanation to an optional learner-facing grammar note. Use one short sentence for simple fixes; use up to three concise sentences when a grammar rule, word-choice contrast, or repeated pattern would help. Leave it empty when the fix notes are enough.",
-      "Set fluencyFeedback only when speech timing metrics show a major rhythm or pause issue; otherwise use an empty string.",
-      "Set targetPhraseFeedback only if target phrases were explicitly provided; otherwise use an empty string.",
-      'Return only valid JSON with keys "reply", "fixes", "correction", "rewrite", "explanation", "followUp", "fluencyFeedback", and "targetPhraseFeedback". Do not include Markdown or prose outside JSON.',
+      'Return only valid JSON with keys "reply", "fixes", "rewrite", and "explanation". Do not include Markdown or prose outside JSON.',
     ];
     const profilePrompt = buildLearnerProfilePrompt(learnerProfile);
     if (profilePrompt) {
@@ -158,31 +154,25 @@ export async function POST(req: Request) {
     });
 
     const raw = completion.choices[0]?.message?.content ?? "{}";
-    const json = recoverMisplacedCorrection(parseTutorJson(raw), message);
-    const displayReply = buildDisplayReply(
-      typeof json.reply === "string" ? json.reply : "",
-      typeof json.followUp === "string" ? json.followUp : ""
-    );
-    const feedback = sanitizeTutorFeedback(json, message, displayReply, normalizedPhrases.length > 0);
+    const json = parseTutorJson(raw);
+    const displayReply = cleanFeedback(json.reply, 1200);
+    const feedback = sanitizeTutorFeedback(json, message, displayReply);
     const updatedProfile = profileId
       ? await updateLearnerPractice(profileId, {
           userMessage: message,
           assistantReply: displayReply,
-          correction: feedback.correction,
           fixes: feedback.fixes,
           rewrite: feedback.rewrite,
           explanation: feedback.explanation,
-          fluencyFeedback: feedback.fluencyFeedback,
-          targetPhraseFeedback: feedback.targetPhraseFeedback,
           speechMetrics,
         })
       : null;
     return Response.json({
-      ...json,
-      ...feedback,
       reply: displayReply,
+      fixes: feedback.fixes,
+      rewrite: feedback.rewrite,
+      explanation: feedback.explanation,
       learnerProfile: updatedProfile,
-      service: serviceConfig.service,
     });
   } catch (err) {
     if (serviceConfig) return localServiceErrorResponse(serviceConfig, err);
@@ -285,105 +275,20 @@ async function updateLearnerPractice(profileId: string, payload: Record<string, 
 
 type TutorFeedback = {
   fixes: TutorFix[];
-  correction: string;
   rewrite: string;
   explanation: string;
-  fluencyFeedback: string;
-  targetPhraseFeedback: string;
 };
 
-type TutorJson = Partial<TutorFeedback> & {
-  reply?: string;
-  followUp?: string;
-  [key: string]: unknown;
-};
-
-function recoverMisplacedCorrection(json: TutorJson, userMessage: string) {
-  if (json.fixes?.length || cleanFeedback(json.correction, 1200)) return json;
-
-  const reply = cleanFeedback(json.reply, 600);
-  const recovered = extractCorrectionFromReply(reply, userMessage);
-  if (!recovered) return json;
-
-  return {
-    ...json,
-    reply: recovered.reply,
-    correction: recovered.correction,
-    explanation: cleanFeedback(json.explanation, 700) || recovered.explanation,
-  };
-}
-
-function extractCorrectionFromReply(reply: string, userMessage: string) {
-  if (!reply) return null;
-  const lastQuestion = reply.match(/[^.!?]*\?\s*$/);
-  if (!lastQuestion) return null;
-
-  const candidate = reply.slice(0, reply.length - lastQuestion[0].length).trim();
-  const followUp = lastQuestion[0].trim();
-  if (!candidateLikelyCorrection(userMessage, candidate)) return null;
-
-  return {
-    correction: candidate.replace(/\s+$/g, ""),
-    reply: followUp || "I see. Tell me more.",
-    explanation: inferCorrectionExplanation(userMessage),
-  };
-}
-
-function candidateLikelyCorrection(userMessage: string, candidate: string) {
-  if (!candidate || normalizeText(candidate) === normalizeText(userMessage)) return false;
-  if (/^(i see|that sounds|sounds like|nice|great|ah[, ]|okay|ok)\b/i.test(candidate)) return false;
-
-  const userWords = significantWords(userMessage);
-  const candidateWords = significantWords(candidate);
-  if (userWords.length < 4 || candidateWords.length < 4) return false;
-
-  const overlap = candidateWords.filter((word) => userWords.includes(word)).length / candidateWords.length;
-  return overlap >= 0.45;
-}
-
-function inferCorrectionExplanation(userMessage: string) {
-  const text = normalizeText(userMessage);
-  const fixes = [];
-  if (text.includes("in this weekend")) fixes.push("preposition");
-  if (text.includes("master student")) fixes.push("possessive title");
-  if (text.includes("research things")) fixes.push("word choice");
-  if (!fixes.length) return "Grammar and word choice.";
-  return `${fixes.slice(0, 2).join(" and ")}.`;
-}
-
-function sanitizeTutorFeedback(json: Partial<TutorFeedback>, userMessage: string, displayReply: string, hasTargetPhrases: boolean): TutorFeedback {
+function sanitizeTutorFeedback(json: Partial<TutorFeedback>, userMessage: string, displayReply: string): TutorFeedback {
   const directFixes = sanitizeTutorFixes(json.fixes, userMessage);
-  const fixes = directFixes.length ? directFixes : sanitizeTutorFixes(parseFixSummary(json.correction), userMessage);
-  const correction = fixes.length ? formatFixesAsCorrection(fixes) : cleanFeedback(json.correction, 1200);
-  const explanation = cleanFeedback(json.explanation, 700);
-  const meaningfulCorrection = fixes.length > 0 || isMeaningfulCorrection(userMessage, correction, explanation, displayReply);
-  const rewrite = meaningfulCorrection ? cleanLearnerRewrite(json.rewrite, userMessage, displayReply) : "";
+  const rewrite = cleanLearnerRewrite(json.rewrite, userMessage, displayReply);
+  const hasFeedback = directFixes.length > 0 || Boolean(rewrite);
 
   return {
-    fixes,
-    correction: meaningfulCorrection ? correction : "",
+    fixes: directFixes,
     rewrite,
-    explanation: meaningfulCorrection ? explanation : "",
-    fluencyFeedback: meaningfulCorrection ? cleanFeedback(json.fluencyFeedback, 120) : "",
-    targetPhraseFeedback: hasTargetPhrases && meaningfulCorrection ? cleanFeedback(json.targetPhraseFeedback, 120) : "",
+    explanation: hasFeedback ? cleanFeedback(json.explanation, 700) : "",
   };
-}
-
-function parseFixSummary(value: unknown): TutorFix[] {
-  const text = cleanFeedback(value, 1200);
-  if (!text.includes("->")) return [];
-  return text
-    .split(/\s*;\s*/)
-    .map((part) => {
-      const match = part.match(/^(.+?)\s*->\s*(.+)$/);
-      if (!match) return null;
-      return {
-        original: cleanFeedback(match[1], 220),
-        corrected: cleanFeedback(match[2], 220),
-        note: "",
-      };
-    })
-    .filter((fix): fix is TutorFix => Boolean(fix?.original && fix.corrected));
 }
 
 function cleanLearnerRewrite(value: unknown, userMessage: string, displayReply: string) {
@@ -391,18 +296,8 @@ function cleanLearnerRewrite(value: unknown, userMessage: string, displayReply: 
   if (!rewrite || isNoCorrectionText(rewrite)) return "";
   if (isTutorReplyLike(rewrite, userMessage, displayReply)) return "";
   if (rewrite.includes("?")) return "";
-  if (!isCorrectionRelatedToCurrentMessage(userMessage, rewrite)) return "";
+  if (!isTextRelatedToCurrentMessage(userMessage, rewrite)) return "";
   return rewrite;
-}
-
-function isMeaningfulCorrection(userMessage: string, correction: string, explanation: string, displayReply = "") {
-  if (!correction) return false;
-  if (isNoCorrectionText(correction) || isNoCorrectionText(explanation)) return false;
-  const normalizedCorrection = normalizeText(correction);
-  if (!normalizedCorrection || normalizedCorrection === normalizeText(userMessage)) return false;
-  if (!isCorrectionRelatedToCurrentMessage(userMessage, correction)) return false;
-  if (isTutorReplyLike(correction, userMessage, displayReply)) return false;
-  return true;
 }
 
 function sanitizeTutorFixes(value: unknown, userMessage: string): TutorFix[] {
@@ -431,36 +326,32 @@ function sanitizeTutorFixes(value: unknown, userMessage: string): TutorFix[] {
   return fixes;
 }
 
-function formatFixesAsCorrection(fixes: TutorFix[]) {
-  return fixes.map((fix) => `${fix.original} -> ${fix.corrected}`).join("; ");
-}
-
 function phraseAppearsInMessage(message: string, phrase: string) {
   const normalizedMessage = normalizeText(message);
   const normalizedPhrase = normalizeText(phrase);
   return Boolean(normalizedPhrase && normalizedMessage.includes(normalizedPhrase));
 }
 
-function isCorrectionRelatedToCurrentMessage(userMessage: string, correction: string) {
+function isTextRelatedToCurrentMessage(userMessage: string, candidate: string) {
   const userWords = significantWords(userMessage);
-  const correctionWords = significantWords(correction);
-  if (userWords.length < 4 || correctionWords.length < 4) return true;
-  const overlap = correctionWords.filter((word) => userWords.includes(word)).length / correctionWords.length;
+  const candidateWords = significantWords(candidate);
+  if (userWords.length < 4 || candidateWords.length < 4) return true;
+  const overlap = candidateWords.filter((word) => userWords.includes(word)).length / candidateWords.length;
   return overlap >= 0.25;
 }
 
-function isTutorReplyLike(correction: string, userMessage: string, displayReply: string) {
-  const normalizedCorrection = normalizeText(correction);
+function isTutorReplyLike(candidate: string, userMessage: string, displayReply: string) {
+  const normalizedCandidate = normalizeText(candidate);
   const normalizedReply = normalizeText(displayReply);
-  if (normalizedReply && (normalizedReply === normalizedCorrection || normalizedReply.includes(normalizedCorrection))) return true;
-  if (/^(hi|hello|nice to meet|that sounds|that makes|that moment|sounds great|great|sure|of course|ah[, ]|oh[, ]|okay|ok|here('|’)s)\b/i.test(correction)) return true;
-  if (correction.includes("?") && /\b(what|how|any|would you|do you|want to|share|tell me)\b/i.test(correction)) return true;
+  if (normalizedReply && (normalizedReply === normalizedCandidate || normalizedReply.includes(normalizedCandidate))) return true;
+  if (/^(hi|hello|nice to meet|that sounds|that makes|that moment|sounds great|great|sure|of course|ah[, ]|oh[, ]|okay|ok|here('|’)s)\b/i.test(candidate)) return true;
+  if (candidate.includes("?") && /\b(what|how|any|would you|do you|want to|share|tell me)\b/i.test(candidate)) return true;
 
   const userWords = significantWords(userMessage);
-  const correctionWords = significantWords(correction);
-  if (userWords.length >= 4 && correctionWords.length >= 4) {
-    const overlap = correctionWords.filter((word) => userWords.includes(word)).length / correctionWords.length;
-    if (overlap < 0.2 && correction.includes("?")) return true;
+  const candidateWords = significantWords(candidate);
+  if (userWords.length >= 4 && candidateWords.length >= 4) {
+    const overlap = candidateWords.filter((word) => userWords.includes(word)).length / candidateWords.length;
+    if (overlap < 0.2 && candidate.includes("?")) return true;
   }
   return false;
 }

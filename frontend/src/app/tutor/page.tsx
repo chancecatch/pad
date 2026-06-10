@@ -14,11 +14,8 @@ type Msg = {
   role: "user" | "assistant";
   text: string;
   fixes?: TutorFix[];
-  correction?: string;
   rewrite?: string;
   explanation?: string;
-  fluencyFeedback?: string;
-  targetPhraseFeedback?: string;
 };
 
 type TutorFix = {
@@ -90,7 +87,6 @@ export default function TutorPage() {
 
   const renderFeedback = (m: Msg): string[] => [
     ...(m.fixes?.length ? m.fixes.map(formatFixLine) : []),
-    !m.fixes?.length && m.correction && `Correction: ${m.correction}`,
     m.explanation && `Note: ${m.explanation}`,
   ].filter((line): line is string => Boolean(line));
 
@@ -351,9 +347,9 @@ export default function TutorPage() {
 function attachFeedbackForTutorMessage(messages: Msg[], msg: Msg) {
   if (msg.role !== "assistant") return [...messages, msg];
 
-  const { fixes, correction, rewrite, explanation, fluencyFeedback, targetPhraseFeedback, ...assistantMessage } = msg;
-  const feedback = { fixes, correction, rewrite, explanation, fluencyFeedback, targetPhraseFeedback };
-  const hasFeedback = Boolean(fixes?.length || correction || rewrite || explanation || fluencyFeedback || targetPhraseFeedback);
+  const { fixes, rewrite, explanation, ...assistantMessage } = msg;
+  const feedback = { fixes, rewrite, explanation };
+  const hasFeedback = Boolean(fixes?.length || rewrite || explanation);
   if (!hasFeedback) return [...messages, assistantMessage];
 
   const next = [...messages];
@@ -394,6 +390,7 @@ function normalizeResumeMessage(message: SavedChatMessage): Msg | null {
     role: message.role,
     text,
     fixes,
+    rewrite: cleanResumeText(message.rewrite, 600),
     explanation: cleanResumeText(message.explanation, 360),
   };
 }
