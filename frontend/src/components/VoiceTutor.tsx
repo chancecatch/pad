@@ -1055,14 +1055,21 @@ function buildCorrectedPracticeText(originalText: string, feedback: Partial<Msg>
   const original = cleanPracticeText(originalText);
   const rewrite = cleanPracticeText(feedback.rewrite);
   const fixes = feedback.fixes ?? [];
+  const rewriteCandidate =
+    isLearnerPracticeCandidate(original, rewrite) && !isPracticeRewriteTooCompressed(original, rewrite)
+      ? rewrite
+      : "";
+
   if (fixes.length) {
     const corrected = applyTutorFixes(original, fixes);
-    if (corrected.appliedCount === fixes.length && corrected.text !== original) return corrected.text;
-    if (isLearnerPracticeCandidate(original, rewrite)) return rewrite;
-    if (corrected.appliedCount > 0 && corrected.text !== original) return corrected.text;
+    const practiceText = cleanPracticeText(cleanPracticeDisfluencies(corrected.text));
+    if (rewriteCandidate && shouldPreferRewriteForMine(original, practiceText, corrected.appliedCount, fixes.length)) return rewriteCandidate;
+    if (practiceText !== original) return practiceText;
   }
 
-  if (isLearnerPracticeCandidate(original, rewrite)) return rewrite;
+  const cleanedOriginal = cleanPracticeText(cleanPracticeDisfluencies(original));
+  if (rewriteCandidate) return rewriteCandidate;
+  if (cleanedOriginal !== original) return cleanedOriginal;
 
   return original;
 }
@@ -1106,6 +1113,81 @@ function cleanPracticeText(value: unknown) {
   return typeof value === "string" ? value.trim().replace(/\s+/g, " ") : "";
 }
 
+function cleanPracticeDisfluencies(value: string) {
+  let text = value
+    .replace(/\b(?:um+|uh+|er+|ah+)\b[,.]?\s*/gi, "")
+    .replace(/\b(?:you know|i mean)\b[,.]?\s*/gi, "")
+    .replace(/\b(kind of|sort of)\s+like\b/gi, "$1")
+    .replace(/\b(just|basically|actually|sometimes|usually|also|can|could|will|should|to|and|or|but|so)\s+like\s+(?!to\b)/gi, "$1 ")
+    .replace(/\blike\s+(?=(?:a|an|the|big|empty|active|regular|extra|real|weird|very|really)\b)/gi, "")
+    .replace(/,\s*like\b\s*/gi, ", ")
+    .replace(/\b(\w+(?:'\w+)?)(?:[\s,]+\1\b)+/gi, "$1")
+    .replace(/\b(i think|i feel like|i guess|i usually|i was|i am|i'm|it's|it is|that is)(?:[\s,]+(?:\1\b))+?/gi, "$1");
+
+  text = collapseRepeatedPracticePhrases(text);
+  return text
+    .replace(/\s+([,.!?])/g, "$1")
+    .replace(/([,.!?]){2,}/g, "$1")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function collapseRepeatedPracticePhrases(value: string) {
+  const words = value.split(/\s+/).filter(Boolean);
+  if (words.length < 4) return value;
+  const result: string[] = [];
+
+  for (let index = 0; index < words.length; index += 1) {
+    let skipped = false;
+    for (const size of [4, 3, 2]) {
+      if (index + size * 2 > words.length) continue;
+      const first = words.slice(index, index + size).map(normalizePracticeToken).join(" ");
+      const second = words.slice(index + size, index + size * 2).map(normalizePracticeToken).join(" ");
+      if (first && first === second) {
+        result.push(...words.slice(index, index + size));
+        index += size * 2 - 1;
+        skipped = true;
+        break;
+      }
+    }
+    if (!skipped) result.push(words[index]);
+  }
+
+  return result.join(" ");
+}
+
+function shouldPreferRewriteForMine(original: string, practiceText: string, appliedCount: number, fixCount: number) {
+  if (!practiceText || practiceText === original) return true;
+  if (appliedCount < fixCount) return true;
+  if (hasPracticeDisfluency(practiceText)) return true;
+  return practiceWordCount(original) >= 40 && practiceWordCount(practiceText) > practiceWordCount(original) * 0.75;
+}
+
+function hasPracticeDisfluency(value: string) {
+  return /\b(?:um+|uh+|er+|ah+|you know|i mean)\b/i.test(value) || /\b(\w+(?:'\w+)?)(?:[\s,]+\1\b)+/i.test(value);
+}
+
+function isPracticeRewriteTooCompressed(original: string, candidate: string) {
+  const sourceWords = practiceWordCount(cleanPracticeDisfluencies(original));
+  const rewriteWords = practiceWordCount(candidate);
+  if (sourceWords < 45) return false;
+  if (rewriteWords >= Math.max(24, Math.floor(sourceWords * 0.45))) return false;
+
+  const sourceTerms = uniqueSignificantPracticeWords(cleanPracticeDisfluencies(original));
+  const rewriteTerms = uniqueSignificantPracticeWords(candidate);
+  if (sourceTerms.length < 8) return false;
+  const covered = sourceTerms.filter((word) => rewriteTerms.includes(word)).length / sourceTerms.length;
+  return covered < 0.55;
+}
+
+function practiceWordCount(value: string) {
+  return value.match(/[A-Za-z]+(?:'[A-Za-z]+)?/g)?.length || 0;
+}
+
+function normalizePracticeToken(value: string) {
+  return value.toLowerCase().replace(/[^\w']/g, "");
+}
+
 function looksLikeFixSummary(value: string) {
   return value.includes("->");
 }
@@ -1124,12 +1206,19 @@ function isLearnerPracticeCandidate(original: string, candidate: string) {
 }
 
 function looksLikeTutorReply(value: string) {
-  return /^(yes|yeah|i('|\u2019)m here|i can hear you|thanks|great|nice|ah[, ]|oh[, ]|sure|here('|’)s|it sounds like|that sounds|that makes|that moment|tell me more|was it|what do you|do you mean)\b/i.test(value);
+  return (
+    /^(i('|\u2019)m here|i can hear you|thanks|great|nice|ah[, ]|oh[, ]|sure|here('|’)s|it sounds like|that sounds|that makes|that moment|tell me more|was it|what do you|do you mean)\b/i.test(value) ||
+    /^(yes|yeah),?\s+(that|it|this)\s+(sounds|makes|is)\b/i.test(value)
+  );
 }
 
 function significantPracticeWords(value: string) {
   const stop = new Set(["the", "a", "an", "and", "or", "to", "for", "of", "in", "on", "is", "are", "am", "i", "you", "it", "this", "that"]);
   return normalizePracticeText(value).split(" ").filter((word) => word.length > 2 && !stop.has(word));
+}
+
+function uniqueSignificantPracticeWords(value: string) {
+  return Array.from(new Set(significantPracticeWords(value)));
 }
 
 function normalizePracticeText(value: string) {

@@ -93,7 +93,17 @@ app.post("/chat/sessions/:id/messages", async (req, res) => {
 
   const sess = await ChatSession.findByIdAndUpdate(
     req.params.id,
-    { $push: { messages: { role, text, fixes: cleanFixes(fixes), rewrite, explanation } } },
+    {
+      $push: {
+        messages: {
+          role,
+          text: cleanString(text, 5000),
+          fixes: cleanFixes(fixes),
+          rewrite: cleanString(rewrite, 2000),
+          explanation: cleanString(explanation, 700),
+        },
+      },
+    },
     { new: true }
   );
   if (!sess) return res.status(404).json({ error: "not_found" });
@@ -262,7 +272,7 @@ function updatePracticeMemory(memory: any, payload: any, currentLevel: string) {
   const userMessage = cleanString(payload.userMessage, 320);
   const assistantReply = cleanString(payload.assistantReply, 320);
   const fixes = cleanFixes(payload.fixes);
-  const rewrite = cleanString(payload.rewrite, 1200);
+  const rewrite = cleanString(payload.rewrite, 2000);
   const explanation = cleanString(payload.explanation, 700);
   const fixSummary = formatFixes(fixes);
   const rewriteIsUseful = isUsefulRewrite(userMessage, rewrite, assistantReply);
@@ -571,7 +581,30 @@ function isUsefulRewrite(userMessage: string, rewrite: string, assistantReply: s
   if (!normalizedRewrite || normalizedRewrite === normalizeText(userMessage)) return false;
   if (rewrite.includes("?")) return false;
   if (isTutorReplyLike(rewrite, userMessage, assistantReply)) return false;
+  if (isRewriteTooCompressed(userMessage, rewrite)) return false;
   return true;
+}
+
+function isRewriteTooCompressed(userMessage: string, rewrite: string) {
+  const sourceWords = countWords(stripSpokenDisfluencies(userMessage));
+  const rewriteWords = countWords(rewrite);
+  if (sourceWords < 45) return false;
+  if (rewriteWords >= Math.max(24, Math.floor(sourceWords * 0.45))) return false;
+
+  const sourceTerms = uniqueSignificantWords(stripSpokenDisfluencies(userMessage));
+  const rewriteTerms = uniqueSignificantWords(rewrite);
+  if (sourceTerms.length < 8) return false;
+  const covered = sourceTerms.filter((word) => rewriteTerms.includes(word)).length / sourceTerms.length;
+  return covered < 0.55;
+}
+
+function stripSpokenDisfluencies(value: string) {
+  return value
+    .replace(/\b(?:um+|uh+|er+|ah+)\b[,.]?\s*/gi, "")
+    .replace(/\b(?:you know|i mean)\b[,.]?\s*/gi, "")
+    .replace(/\b(\w+(?:'\w+)?)(?:[\s,]+\1\b)+/gi, "$1")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function isTutorReplyLike(candidate: string, userMessage: string, assistantReply: string) {
@@ -610,4 +643,8 @@ function isNoCorrectionText(value: string) {
 function significantWords(value: string) {
   const stop = new Set(["the", "a", "an", "and", "or", "to", "for", "of", "in", "on", "is", "are", "am", "i", "you", "it", "this", "that"]);
   return normalizeText(value).split(" ").filter((word) => word.length > 2 && !stop.has(word));
+}
+
+function uniqueSignificantWords(value: string) {
+  return Array.from(new Set(significantWords(value)));
 }

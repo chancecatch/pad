@@ -99,10 +99,15 @@ export async function POST(req: Request) {
       "Fix policy: return 0-4 fixes as local before/after pairs. Use fixes as an array of objects with original, corrected, and note strings.",
       "Each fix.original must be the shortest exact wrong substring from the newest utterance. Do not include correct surrounding context or a whole sentence unless the whole sentence is the error.",
       "Each fix.corrected must be a natural replacement for that substring. Each fix.note must name the pattern in 2-6 words, such as 'preposition', 'article', 'word choice', or 'tense'.",
+      "Treat repeated filler words, hesitation phrases, and false starts as useful correction targets when they make the learner's spoken sentence hard to practice.",
       "Prefer fewer high-signal fixes over many minor rewrites. If several errors are tightly connected, combine them into one local fix.",
       "Examples of local fixes: 'in this weekend' -> 'this weekend'; 'a master student' -> 'a master's student' or 'a graduate student'; 'research things' -> 'research work' or 'research tasks'.",
       "Keep fixes and rewrite separate from reply. The reply should react to the learner's meaning and ask the next question, not restate the corrected sentence.",
-      "Set rewrite to one optional polished first-person version of the learner's newest answer only when it would be useful for learner memory after multiple or structural fixes. Never put the tutor reply, praise, or a follow-up question in rewrite. Otherwise leave it empty.",
+      "Rewrite policy: set rewrite to one polished first-person version of the learner's newest answer only when it would be useful after multiple, structural, or fluency fixes.",
+      "The rewrite must preserve all distinct ideas, examples, reasons, places, events, and relationships from the newest learner utterance. Do not summarize by dropping details.",
+      "Remove unnecessary fillers, repeated fragments, and hesitation words in rewrite, but keep the learner's intended meaning and personal voice.",
+      "For long learner turns, rewrite should usually be 2-5 natural sentences and should not be much shorter than the meaningful content of the original after filler removal.",
+      "Never put the tutor reply, praise, or a follow-up question in rewrite. Otherwise leave it empty.",
       "Set explanation to an optional learner-facing grammar note. Use one short sentence for simple fixes; use up to three concise sentences when a grammar rule, word-choice contrast, or repeated pattern would help. Leave it empty when the fix notes are enough.",
       'Return only valid JSON with keys "reply", "fixes", "rewrite", and "explanation". Do not include Markdown or prose outside JSON.',
     ];
@@ -292,11 +297,12 @@ function sanitizeTutorFeedback(json: Partial<TutorFeedback>, userMessage: string
 }
 
 function cleanLearnerRewrite(value: unknown, userMessage: string, displayReply: string) {
-  const rewrite = cleanFeedback(value, 1200);
+  const rewrite = cleanFeedback(value, 2000);
   if (!rewrite || isNoCorrectionText(rewrite)) return "";
   if (isTutorReplyLike(rewrite, userMessage, displayReply)) return "";
   if (rewrite.includes("?")) return "";
   if (!isTextRelatedToCurrentMessage(userMessage, rewrite)) return "";
+  if (isRewriteTooCompressed(userMessage, rewrite)) return "";
   return rewrite;
 }
 
@@ -340,6 +346,19 @@ function isTextRelatedToCurrentMessage(userMessage: string, candidate: string) {
   return overlap >= 0.25;
 }
 
+function isRewriteTooCompressed(userMessage: string, candidate: string) {
+  const sourceWords = countMeaningfulWords(stripSpokenDisfluencies(userMessage));
+  const rewriteWords = countMeaningfulWords(candidate);
+  if (sourceWords < 45) return false;
+  if (rewriteWords >= Math.max(24, Math.floor(sourceWords * 0.45))) return false;
+
+  const sourceTerms = uniqueSignificantWords(stripSpokenDisfluencies(userMessage));
+  const rewriteTerms = uniqueSignificantWords(candidate);
+  if (sourceTerms.length < 8) return false;
+  const covered = sourceTerms.filter((word) => rewriteTerms.includes(word)).length / sourceTerms.length;
+  return covered < 0.55;
+}
+
 function isTutorReplyLike(candidate: string, userMessage: string, displayReply: string) {
   const normalizedCandidate = normalizeText(candidate);
   const normalizedReply = normalizeText(displayReply);
@@ -369,6 +388,19 @@ function cleanFeedback(value: unknown, maxLength: number) {
   return typeof value === "string" ? value.trim().replace(/\s+/g, " ").slice(0, maxLength) : "";
 }
 
+function stripSpokenDisfluencies(value: string) {
+  return value
+    .replace(/\b(?:um+|uh+|er+|ah+)\b[,.]?\s*/gi, "")
+    .replace(/\b(?:you know|i mean)\b[,.]?\s*/gi, "")
+    .replace(/\b(\w+(?:'\w+)?)(?:[\s,]+\1\b)+/gi, "$1")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function countMeaningfulWords(value: string) {
+  return value.match(/[A-Za-z]+(?:'[A-Za-z]+)?/g)?.length || 0;
+}
+
 function trimWords(value: string, maxWords: number) {
   const words = value.split(/\s+/).filter(Boolean);
   return words.length > maxWords ? words.slice(0, maxWords).join(" ") : value;
@@ -381,4 +413,8 @@ function normalizeText(value: string) {
 function significantWords(value: string) {
   const stop = new Set(["the", "a", "an", "and", "or", "to", "for", "of", "in", "on", "is", "are", "am", "i", "you", "it", "this", "that"]);
   return normalizeText(value).split(" ").filter((word) => word.length > 2 && !stop.has(word));
+}
+
+function uniqueSignificantWords(value: string) {
+  return Array.from(new Set(significantWords(value)));
 }
