@@ -1,6 +1,6 @@
 /* CHANGE NOTE
 Why: Preserve richer tutor feedback in saved chat sessions
-What changed: Keep tutor feedback fields focused on fix pairs, rewrite, and explanation
+What changed: Keep tutor feedback fields focused on learner-preserving mine text, rewrite, and note
 Behaviour/Assumptions: Existing user/assistant messages remain valid with only role and text
 Rollback: git checkout -- src/models/Chat.ts
 - mj
@@ -8,22 +8,13 @@ Rollback: git checkout -- src/models/Chat.ts
 
 import mongoose from "mongoose";
 
-const TutorFixSchema = new mongoose.Schema(
-  {
-    original: String,
-    corrected: String,
-    note: String,
-  },
-  { _id: false }
-);
-
 const ChatMessageSchema = new mongoose.Schema(
   {
     role: { type: String, enum: ["user", "assistant"], required: true },
     text: { type: String, required: true },
-    fixes: { type: [TutorFixSchema], default: [] },
+    mine: String,
     rewrite: String,
-    explanation: String,
+    note: String,
     createdAt: { type: Date, default: Date.now },
   },
   { _id: false }

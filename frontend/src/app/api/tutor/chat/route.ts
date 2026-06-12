@@ -1,7 +1,7 @@
 /* CHANGE NOTE
 Why: Make tutor chat local-only
-What changed: Refined tutor behavior prompt, switched visible feedback to validated fix pairs, and kept full rewrites as optional memory
-Behaviour/Assumptions: LOCAL_CHAT_BASE_URL points to an accessible chat server and fixes must match the current learner utterance
+What changed: Refined tutor behavior prompt, separated learner-preserving mine text from fuller rewrites, and repair-mandated missing practice text for long turns
+Behaviour/Assumptions: LOCAL_CHAT_BASE_URL points to an accessible chat server and feedback must match the current learner utterance
 Rollback: git checkout -- src/app/api/tutor/chat/route.ts
 - mj
 */
@@ -14,7 +14,6 @@ import {
   resolveLocalServiceConfig,
   tutorErrorResponse,
   type SpeechMetrics,
-  type TutorFix,
 } from "@/lib/tutorProviders";
 import { resolveBackendBase } from "@/lib/backendProxy";
 
@@ -88,28 +87,31 @@ export async function POST(req: Request) {
       "You are a warm English speaking tutor and conversation partner for adult learners.",
       "Primary goal: keep the conversation natural, useful, and confidence-building while noticing recurring grammar and phrasing patterns over time.",
       "Reply policy: write only the tutor's conversational response in reply. Keep it 1-3 short sentences, always in English, and include one natural follow-up question unless the learner asked for something else.",
-      "Do not mention corrections inside reply unless the learner asks. Visible feedback belongs only in fixes, rewrite, and explanation.",
-      "Correction scope: the only text eligible for new fixes is the learner's newest utterance.",
-      "Conversation history, profile memory, interview questions, reference materials, and previous corrections are context only. Do not quote them as fix.original or rewrite them as if they were the learner's newest utterance.",
-      "If a past mistake appears again in the newest utterance, correct it again as a current-utterance fix.",
-      "If the newest utterance is already natural enough, return fixes as an empty array and leave rewrite and explanation empty.",
-      "For long learner turns with clear awkward phrasing, repeated fillers, tense errors, or unnatural collocations, still return 1-4 high-signal fixes; do not skip fixes just because the meaning is understandable.",
+      "Do not mention corrections inside reply unless the learner asks. Learner-facing study text belongs only in mine, rewrite, and note.",
+      "Correction scope: the only text eligible for mine/rewrite/note is the learner's newest utterance.",
+      "Conversation history, profile memory, interview questions, reference materials, and previous corrections are context only. Do not rewrite them as if they were the learner's newest utterance.",
+      "If a past mistake appears again in the newest utterance, correct it again in mine and briefly explain the pattern in note.",
+      "If the newest utterance is already natural enough, mine may be a lightly cleaned version and rewrite/note may be empty.",
+      "For long learner turns with clear awkward phrasing, repeated fillers, tense errors, or unnatural collocations, still return mine and note; do not skip learner-facing feedback just because the meaning is understandable.",
       "Catch clear errors even when meaning is understandable, especially grammar, prepositions, articles, possessives, tense, plurality, word choice, collocations, and awkward phrasing that would sound unnatural in conversation.",
       "Do not overcorrect personal style, accent, informal spoken fillers, or acceptable casual grammar unless it blocks clarity or sounds clearly unnatural.",
-      "Fix policy: return 0-4 fixes as local before/after pairs. Use fixes as an array of objects with original, corrected, and note strings.",
-      "Each fix.original must be the shortest exact wrong substring from the newest utterance. Do not include correct surrounding context or a whole sentence unless the whole sentence is the error.",
-      "Each fix.corrected must be a natural replacement for that substring. Each fix.note must name the pattern in 2-6 words, such as 'preposition', 'article', 'word choice', or 'tense'.",
-      "Treat repeated filler words, hesitation phrases, and false starts as useful correction targets when they make the learner's spoken sentence hard to practice.",
-      "Prefer fewer high-signal fixes over many minor rewrites. If several errors are tightly connected, combine them into one local fix.",
-      "Examples of local fixes: 'in this weekend' -> 'this weekend'; 'a master student' -> 'a master's student' or 'a graduate student'; 'research things' -> 'research work' or 'research tasks'.",
-      "Keep fixes and rewrite separate from reply. The reply should react to the learner's meaning and ask the next question, not restate the corrected sentence.",
-      "Rewrite policy: set rewrite to one polished first-person version of the learner's newest answer only when it would be useful after multiple, structural, or fluency fixes.",
+      "Mine policy: set mine to the learner's own completed thought, corrected into grammatical and natural English while preserving the original sentence's meaning, order, concrete details, and personal voice as much as possible.",
+      "Mine is not a free rewrite. Do not simplify away details, change the speaker's perspective, or reorganize the answer into a new composition. Remove fillers, repeated fragments, false starts, and STT clutter; fix grammar, collocations, word choice, articles, prepositions, tense, and sentence boundaries.",
+      "Treat repeated filler words, hesitation phrases, and false starts as cleanup targets when they make the learner's spoken sentence hard to practice.",
+      "Be careful with ASR-like modal or negation artifacts around filler words such as 'can/can't like'. Do not create a correction that reverses the learner's likely intended meaning. In a sports celebration context, 'they can't like celebrate themselves with food' is likely meant as 'they can celebrate with some food' unless the learner clearly means they are unable to celebrate.",
+      "In sports tournament contexts, awkward phrases like 'get processed', 'get promoted', or 'go up' usually mean 'advance to the next stage' or 'make it to the next round', not 'be scheduled'.",
+      "Do not use 'promoted' for World Cup or tournament advancement unless the source is explicitly about league promotion.",
+      "Note policy: set note to a concise learner-facing explanation of why mine changed. Mention the most useful grammar, word-choice, or fluency pattern in one short sentence, or up to three concise sentences for long turns. Do not output a separate correction list.",
+      "Rewrite policy: set rewrite to a freer, clearer, natural version of what the learner was trying to say. Rewrite can reorganize the answer and choose easier/more idiomatic wording, but it must preserve the learner's intended meaning and concrete details.",
+      "For spoken learner turns over about 35 meaningful words, if mine or note makes meaningful changes, rewrite is required. Do not leave rewrite empty just because mine already exists.",
       "The rewrite must preserve all distinct ideas, examples, reasons, places, events, and relationships from the newest learner utterance. Do not summarize by dropping details.",
-      "Remove unnecessary fillers, repeated fragments, and hesitation words in rewrite, but keep the learner's intended meaning and personal voice.",
-      "For long learner turns, rewrite should usually be 2-5 natural sentences and should not be much shorter than the meaningful content of the original after filler removal.",
+      "Remove unnecessary fillers, repeated fragments, and hesitation words in rewrite, while keeping the learner's intended meaning and personal voice.",
+      "Drop empty conversational openers such as 'I don't know' when they do not add real meaning.",
+      "Preserve the learner's team-identification perspective. If the learner uses we/us/our for their team, keep we/us/our in mine and rewrite instead of changing it to they/them.",
+      "For long learner turns, rewrite should usually be 2-5 natural sentences, or two short paragraphs when the answer has two clear parts. It should read like a polished transcript/study-pack answer, not a short gist.",
+      "For long learner turns, rewrite should normally keep 55-100% of the meaningful source length after filler removal. Never compress several concrete ideas into one generic sentence.",
       "Never put the tutor reply, praise, or a follow-up question in rewrite. Otherwise leave it empty.",
-      "Set explanation to an optional learner-facing grammar note. Use one short sentence for simple fixes; use up to three concise sentences when a grammar rule, word-choice contrast, or repeated pattern would help. Leave it empty when the fix notes are enough.",
-      'Return only valid JSON with keys "reply", "fixes", "rewrite", and "explanation". Do not include Markdown or prose outside JSON.',
+      'Return only valid JSON with keys "reply", "mine", "rewrite", and "note". Do not include correction arrays, Markdown, or prose outside JSON.',
     ];
     const profilePrompt = buildLearnerProfilePrompt(learnerProfile);
     if (profilePrompt) {
@@ -161,22 +163,31 @@ export async function POST(req: Request) {
     const raw = completion.choices[0]?.message?.content ?? "{}";
     const json = parseTutorJson(raw);
     const displayReply = cleanFeedback(json.reply, 1200);
-    const feedback = sanitizeTutorFeedback(json, message, displayReply);
+    let feedback = sanitizeTutorFeedback(json, message, displayReply);
+    if (shouldRepairMine(message, feedback)) {
+      const repaired = await requestMineRepair(serviceConfig, message, displayReply, feedback);
+      if (repaired.mine) feedback = { ...feedback, mine: repaired.mine, note: repaired.note || feedback.note };
+    }
+    if (shouldRepairRewrite(message, feedback)) {
+      const repairedRewrite = await requestRewriteRepair(serviceConfig, message, displayReply, feedback);
+      if (repairedRewrite) feedback = { ...feedback, rewrite: repairedRewrite };
+    }
+    if (!feedback.mine) feedback = { ...feedback, mine: fallbackMine(message) };
     const updatedProfile = profileId
       ? await updateLearnerPractice(profileId, {
           userMessage: message,
           assistantReply: displayReply,
-          fixes: feedback.fixes,
+          mine: feedback.mine,
           rewrite: feedback.rewrite,
-          explanation: feedback.explanation,
+          note: feedback.note,
           speechMetrics,
         })
       : null;
     return Response.json({
       reply: displayReply,
-      fixes: feedback.fixes,
+      mine: feedback.mine,
       rewrite: feedback.rewrite,
-      explanation: feedback.explanation,
+      note: feedback.note,
       learnerProfile: updatedProfile,
     });
   } catch (err) {
@@ -279,25 +290,34 @@ async function updateLearnerPractice(profileId: string, payload: Record<string, 
 }
 
 type TutorFeedback = {
-  fixes: TutorFix[];
+  mine: string;
   rewrite: string;
-  explanation: string;
+  note: string;
 };
 
 function sanitizeTutorFeedback(json: Partial<TutorFeedback>, userMessage: string, displayReply: string): TutorFeedback {
-  const directFixes = sanitizeTutorFixes(json.fixes, userMessage);
+  const mine = cleanLearnerMine(json.mine, userMessage, displayReply);
   const rewrite = cleanLearnerRewrite(json.rewrite, userMessage, displayReply);
-  const hasFeedback = directFixes.length > 0 || Boolean(rewrite);
+  const hasFeedback = Boolean(mine || rewrite);
 
   return {
-    fixes: directFixes,
+    mine,
     rewrite,
-    explanation: hasFeedback ? cleanFeedback(json.explanation, 700) : "",
+    note: hasFeedback ? cleanFeedback(json.note, 700) : "",
   };
 }
 
+function cleanLearnerMine(value: unknown, userMessage: string, displayReply: string) {
+  const mine = normalizeSportsTournamentTerms(cleanFeedback(value, 2500), userMessage);
+  if (!mine || isNoCorrectionText(mine)) return "";
+  if (isTutorReplyLike(mine, userMessage, displayReply)) return "";
+  if (!isTextRelatedToCurrentMessage(userMessage, mine)) return "";
+  if (isMineTooCompressed(userMessage, mine)) return "";
+  return mine;
+}
+
 function cleanLearnerRewrite(value: unknown, userMessage: string, displayReply: string) {
-  const rewrite = cleanFeedback(value, 2000);
+  const rewrite = normalizeSportsTournamentTerms(cleanFeedback(value, 2000), userMessage);
   if (!rewrite || isNoCorrectionText(rewrite)) return "";
   if (isTutorReplyLike(rewrite, userMessage, displayReply)) return "";
   if (rewrite.includes("?")) return "";
@@ -306,36 +326,151 @@ function cleanLearnerRewrite(value: unknown, userMessage: string, displayReply: 
   return rewrite;
 }
 
-function sanitizeTutorFixes(value: unknown, userMessage: string): TutorFix[] {
-  if (!Array.isArray(value)) return [];
-  const seen = new Set<string>();
-  const fixes: TutorFix[] = [];
-
-  for (const item of value) {
-    const fix = item && typeof item === "object" ? (item as Partial<TutorFix>) : null;
-    if (!fix) continue;
-    const original = cleanFeedback(fix.original, 220);
-    const corrected = cleanFeedback(fix.corrected, 220);
-    const note = trimWords(cleanFeedback(fix.note, 80), 8);
-    const key = `${normalizeText(original)}->${normalizeText(corrected)}`;
-
-    if (!original || !corrected || seen.has(key)) continue;
-    if (normalizeText(original) === normalizeText(corrected)) continue;
-    if (!phraseAppearsInMessage(userMessage, original)) continue;
-    if (isTutorReplyLike(corrected, userMessage, "")) continue;
-
-    seen.add(key);
-    fixes.push({ original, corrected, note });
-    if (fixes.length >= 5) break;
-  }
-
-  return fixes;
+function shouldRepairRewrite(userMessage: string, feedback: TutorFeedback) {
+  const sourceWords = countMeaningfulWords(stripSpokenDisfluencies(userMessage));
+  if (sourceWords < 35) return false;
+  const mineDiffers = Boolean(feedback.mine && normalizeText(feedback.mine) !== normalizeText(fallbackMine(userMessage)));
+  const hasFeedbackSignal = mineDiffers || Boolean(feedback.note) || hasSpokenDisfluency(userMessage);
+  if (!hasFeedbackSignal) return false;
+  return !feedback.rewrite || sourceWords >= 70;
 }
 
-function phraseAppearsInMessage(message: string, phrase: string) {
-  const normalizedMessage = normalizeText(message);
-  const normalizedPhrase = normalizeText(phrase);
-  return Boolean(normalizedPhrase && normalizedMessage.includes(normalizedPhrase));
+function shouldRepairMine(userMessage: string, feedback: TutorFeedback) {
+  const source = stripSpokenDisfluencies(userMessage);
+  const sourceWords = countMeaningfulWords(source);
+  if (sourceWords < 12) return false;
+  if (!feedback.mine) return sourceWords >= 25 || hasSpokenDisfluency(userMessage);
+  if (isMineTooCompressed(userMessage, feedback.mine)) return true;
+  if (hasSpokenDisfluency(feedback.mine)) return true;
+  if (
+    hasSpokenDisfluency(userMessage) &&
+    normalizeText(feedback.mine) === normalizeText(userMessage)
+  ) {
+    return true;
+  }
+  return false;
+}
+
+async function requestMineRepair(
+  config: ReturnType<typeof resolveLocalServiceConfig>,
+  userMessage: string,
+  displayReply: string,
+  feedback: TutorFeedback
+) {
+  try {
+    const mineSource = normalizeLikelySttArtifacts(userMessage);
+    const completion = await requestChatCompletion(config, {
+      model: config.model,
+      messages: [
+        {
+          role: "system",
+          content: [
+            "You are an English speaking coach editing one messy spoken learner transcript.",
+            'Return only valid JSON with exactly this shape: {"mine":"...","note":"..."}',
+            "Write mine as the learner's own completed thought corrected into grammatical, natural English.",
+            "Mine is not a free rewrite. Preserve the learner's original meaning, order, concrete details, and personal voice as much as possible.",
+            "Remove fillers, repeated fragments, false starts, and STT clutter. Fix grammar, articles, prepositions, tense, sentence boundaries, word choice, and collocations.",
+            "Do not simplify away details, add new ideas, add tutor praise, add advice, or ask a follow-up question.",
+            "Preserve first-person/team perspective. If the learner uses we/us/our for their team, keep that perspective.",
+            "Recover likely intended meaning from messy STT and fillers. In sports-win contexts, 'they can't like celebrate themselves with food' is often intended as 'they can celebrate with food' unless the surrounding context clearly says they cannot.",
+            "In sports tournament contexts, awkward phrases like 'get processed', 'get promoted', or 'go up' usually mean 'advance to the next stage' or 'make it to the next round', not 'be scheduled'.",
+            "Do not use 'promoted' for World Cup or tournament advancement unless the source is explicitly about league promotion.",
+            "For long sources, mine may be shorter after removing filler, but it must keep every meaningful point.",
+            "Write note as one short learner-facing explanation of the most useful grammar, word-choice, or fluency changes.",
+          ].join("\n"),
+        },
+        {
+          role: "user",
+          content: [
+            "Learner transcript to correct as mine:",
+            mineSource,
+            mineSource !== userMessage ? `\nRaw transcript before obvious STT cleanup:\n${userMessage}` : "",
+            "",
+            "Previous mine candidate to improve:",
+            feedback.mine || "(none)",
+            "",
+            "Previous note candidate:",
+            feedback.note || "(none)",
+            "",
+            "Tutor reply to avoid copying:",
+            displayReply || "(none)",
+          ].join("\n"),
+        },
+      ],
+      response_format: { type: "json_object" },
+      stream: false,
+    });
+    const raw = completion.choices[0]?.message?.content ?? "{}";
+    const json = parseTutorJson(raw);
+    return {
+      mine: cleanLearnerMine(json.mine, userMessage, displayReply),
+      note: cleanFeedback(json.note, 700),
+    };
+  } catch (error) {
+    console.warn("[tutor] Mine repair skipped:", error);
+    return { mine: "", note: "" };
+  }
+}
+
+async function requestRewriteRepair(
+  config: ReturnType<typeof resolveLocalServiceConfig>,
+  userMessage: string,
+  displayReply: string,
+  feedback: TutorFeedback
+) {
+  try {
+    const rewriteSource = normalizeLikelySttArtifacts(userMessage);
+    const completion = await requestChatCompletion(config, {
+      model: config.model,
+      messages: [
+        {
+          role: "system",
+          content: [
+            "You are an English speaking coach rewriting one messy spoken learner transcript.",
+            'Return only valid JSON with exactly this shape: {"rewrite":"..."}',
+            "Write a polished first-person version of the learner's newest answer only.",
+            "Preserve every concrete idea, example, reason, place, event, prediction, and relationship from the source. Do not summarize by dropping details.",
+            "Recover the learner's likely intended meaning from messy STT and fillers. If a filler-heavy phrase creates an accidental negation or contradiction, use the surrounding context to choose the intended positive or negative meaning.",
+            "In sports-win contexts, a fragment like 'they can't like celebrate themselves with food' is often a messy version of 'they can celebrate with food' unless the learner clearly says they are unable to celebrate.",
+            "In sports tournament contexts, awkward phrases like 'get processed', 'get promoted', or 'go up' usually mean 'advance to the next stage' or 'make it to the next round', not 'be scheduled'.",
+            "Do not use 'promoted' for World Cup or tournament advancement unless the source is explicitly about league promotion.",
+            "The previous mine/note candidates are hints, not authorities. Ignore anything that reverses the intended meaning or conflicts with the surrounding context.",
+            "Remove fillers, repeated fragments, false starts, and hesitation words while keeping the learner's intended meaning and personal voice.",
+            "Drop empty conversational openers such as 'I don't know' when they do not add real meaning.",
+            "Preserve the learner's team-identification perspective. If the learner uses we/us/our for their team, keep we/us/our in the rewrite instead of changing it to they/them.",
+            "Prefer natural spoken English that the learner can say aloud. Keep concrete details such as food, location, host country, next opponent, worry about losing, and trying hard when they appear in the source.",
+            "For source turns over about 50 words, use 2-5 natural sentences and normally keep 55-100% of the meaningful source length after filler removal.",
+            "Do not add tutor praise, a tutor reply, advice, or a follow-up question.",
+          ].join("\n"),
+        },
+        {
+          role: "user",
+          content: [
+            "Learner transcript for rewriting:",
+            rewriteSource,
+            rewriteSource !== userMessage ? `\nRaw transcript before obvious STT cleanup:\n${userMessage}` : "",
+            "",
+            "Previous mine candidate:",
+            feedback.mine || "(none)",
+            "",
+            "Previous note candidate:",
+            feedback.note || "(none)",
+            "",
+            "Tutor reply to avoid copying:",
+            displayReply || "(none)",
+          ].join("\n"),
+        },
+      ],
+      response_format: { type: "json_object" },
+      stream: false,
+    });
+    const raw = completion.choices[0]?.message?.content ?? "{}";
+    const json = parseTutorJson(raw);
+    return cleanLearnerRewrite(json.rewrite, userMessage, displayReply);
+  } catch (error) {
+    console.warn("[tutor] Rewrite repair skipped:", error);
+    return "";
+  }
 }
 
 function isTextRelatedToCurrentMessage(userMessage: string, candidate: string) {
@@ -350,13 +485,58 @@ function isRewriteTooCompressed(userMessage: string, candidate: string) {
   const sourceWords = countMeaningfulWords(stripSpokenDisfluencies(userMessage));
   const rewriteWords = countMeaningfulWords(candidate);
   if (sourceWords < 45) return false;
-  if (rewriteWords >= Math.max(24, Math.floor(sourceWords * 0.45))) return false;
+  if (rewriteWords >= Math.max(32, Math.floor(sourceWords * 0.55))) return false;
 
   const sourceTerms = uniqueSignificantWords(stripSpokenDisfluencies(userMessage));
   const rewriteTerms = uniqueSignificantWords(candidate);
   if (sourceTerms.length < 8) return false;
   const covered = sourceTerms.filter((word) => rewriteTerms.includes(word)).length / sourceTerms.length;
-  return covered < 0.55;
+  return covered < 0.62;
+}
+
+function isMineTooCompressed(userMessage: string, candidate: string) {
+  const sourceWords = countMeaningfulWords(stripSpokenDisfluencies(userMessage));
+  const mineWords = countMeaningfulWords(candidate);
+  if (sourceWords < 45) return false;
+  if (mineWords >= Math.max(36, Math.floor(sourceWords * 0.5))) return false;
+
+  const sourceTerms = uniqueSignificantWords(stripSpokenDisfluencies(userMessage));
+  const mineTerms = uniqueSignificantWords(candidate);
+  if (sourceTerms.length < 8) return false;
+  const covered = sourceTerms.filter((word) => mineTerms.includes(word)).length / sourceTerms.length;
+  return covered < 0.52;
+}
+
+function hasSpokenDisfluency(value: string) {
+  return (
+    /\b(?:um+|uh+|er+|ah+|you know|i mean)\b/i.test(value) ||
+    /,\s*like\b|\blike\s*,|\b(?:just|basically|actually|so|but|and|or|can|can't|could|would|should|to)\s+like\b/i.test(value) ||
+    /\b(\w+(?:'\w+)?)(?:[\s,]+\1\b)+/i.test(value)
+  );
+}
+
+function normalizeLikelySttArtifacts(value: string) {
+  return value.replace(/\bthey\s+can(?:not|'t)\s+like\s+celebrate\s+themselves\b/gi, "they can celebrate");
+}
+
+function normalizeSportsTournamentTerms(value: string, source: string) {
+  if (!value || !isSportsTournamentContext(source)) return value;
+  return value
+    .replace(/\bget\s+processed\b/gi, "advance")
+    .replace(/\bgets\s+processed\b/gi, "advances")
+    .replace(/\bgot\s+processed\b/gi, "advanced")
+    .replace(/\bgetting\s+processed\b/gi, "advancing")
+    .replace(/\bget\s+promoted\b/gi, "advance")
+    .replace(/\bgets\s+promoted\b/gi, "advances")
+    .replace(/\bgot\s+promoted\b/gi, "advanced")
+    .replace(/\bgetting\s+promoted\b/gi, "advancing");
+}
+
+function isSportsTournamentContext(value: string) {
+  return (
+    /\b(world cup|tournament|group stage|host country|next game|match|football|soccer)\b/i.test(value) &&
+    /\b(korea|mexico|canada|usa|team|game|round|stage|advance|processed|promoted|go up)\b/i.test(value)
+  );
 }
 
 function isTutorReplyLike(candidate: string, userMessage: string, displayReply: string) {
@@ -397,13 +577,12 @@ function stripSpokenDisfluencies(value: string) {
     .trim();
 }
 
-function countMeaningfulWords(value: string) {
-  return value.match(/[A-Za-z]+(?:'[A-Za-z]+)?/g)?.length || 0;
+function fallbackMine(value: string) {
+  return stripSpokenDisfluencies(value);
 }
 
-function trimWords(value: string, maxWords: number) {
-  const words = value.split(/\s+/).filter(Boolean);
-  return words.length > maxWords ? words.slice(0, maxWords).join(" ") : value;
+function countMeaningfulWords(value: string) {
+  return value.match(/[A-Za-z]+(?:'[A-Za-z]+)?/g)?.length || 0;
 }
 
 function normalizeText(value: string) {

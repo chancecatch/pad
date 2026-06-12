@@ -1,6 +1,6 @@
 /* CHANGE NOTE
 Why: Make the tutor start from learner identity instead of per-session settings
-What changed: Added profile login, compact profile gate, one-exchange returning context, and fix-pair visible learner feedback
+What changed: Added profile login, compact profile gate, one-exchange returning context, and note-based learner feedback
 Behaviour/Assumptions: Learner profiles persist in MongoDB and recent practice context can seed a new session
 Rollback: git checkout -- src/app/tutor/page.tsx
 - mj
@@ -13,16 +13,10 @@ import VoiceTutor from "@/components/VoiceTutor";
 type Msg = {
   role: "user" | "assistant";
   text: string;
-  fixes?: TutorFix[];
+  mine?: string;
   rewrite?: string;
-  explanation?: string;
-  showRewrite?: boolean;
-};
-
-type TutorFix = {
-  original: string;
-  corrected: string;
   note?: string;
+  showRewrite?: boolean;
 };
 
 type LearnerProfile = {
@@ -57,7 +51,7 @@ type LearnerProfile = {
   };
 };
 
-type SavedChatMessage = Msg & { createdAt?: string };
+type SavedChatMessage = Msg & { createdAt?: string; explanation?: string };
 
 type ChatSession = {
   _id: string;
@@ -87,8 +81,7 @@ export default function TutorPage() {
   const contextRequestRef = useRef(0);
 
   const renderFeedback = (m: Msg): string[] => [
-    ...(m.fixes?.length ? m.fixes.map(formatFixLine) : []),
-    m.explanation && `Note: ${m.explanation}`,
+    m.note && `Note: ${m.note}`,
     m.showRewrite && m.rewrite && `Rewrite: ${m.rewrite}`,
   ].filter((line): line is string => Boolean(line));
 
@@ -352,9 +345,9 @@ export default function TutorPage() {
 function attachFeedbackForTutorMessage(messages: Msg[], msg: Msg) {
   if (msg.role !== "assistant") return [...messages, msg];
 
-  const { fixes, rewrite, explanation, ...assistantMessage } = msg;
-  const feedback = { fixes, rewrite, explanation };
-  const hasFeedback = Boolean(fixes?.length || rewrite || explanation);
+  const { mine, rewrite, note, ...assistantMessage } = msg;
+  const feedback = { mine, rewrite, note };
+  const hasFeedback = Boolean(mine || rewrite || note);
   if (!hasFeedback) return [...messages, assistantMessage];
 
   const next = [...messages];
@@ -401,40 +394,19 @@ function normalizeResumeMessage(message: SavedChatMessage): Msg | null {
   if (message.role !== "user" && message.role !== "assistant") return null;
   const text = cleanResumeText(message.text, 260);
   if (!text) return null;
-  const fixes = normalizeResumeFixes(message.fixes);
   return {
     role: message.role,
     text,
-    fixes,
+    mine: cleanResumeText(message.mine, 900),
     rewrite: cleanResumeText(message.rewrite, 600),
-    explanation: cleanResumeText(message.explanation, 360),
+    note: cleanResumeText(message.note || message.explanation, 360),
   };
-}
-
-function normalizeResumeFixes(value: unknown): TutorFix[] {
-  if (!Array.isArray(value)) return [];
-  const fixes: TutorFix[] = [];
-  for (const item of value) {
-    if (!item || typeof item !== "object") continue;
-    const record = item as Record<string, unknown>;
-    const original = cleanResumeText(record.original, 120);
-    const corrected = cleanResumeText(record.corrected, 120);
-    const note = cleanResumeText(record.note, 60);
-    if (original && corrected) fixes.push({ original, corrected, note });
-    if (fixes.length >= 3) break;
-  }
-  return fixes;
 }
 
 function cleanResumeText(value: unknown, maxLength: number) {
   const text = typeof value === "string" ? value.trim().replace(/\s+/g, " ") : "";
   if (!text || text.length <= maxLength) return text;
   return `${text.slice(0, Math.max(0, maxLength - 3)).trim()}...`;
-}
-
-function formatFixLine(fix: TutorFix) {
-  const note = fix.note ? ` (${fix.note})` : "";
-  return `Fix: ${fix.original} -> ${fix.corrected}${note}`;
 }
 
 function PinInput({

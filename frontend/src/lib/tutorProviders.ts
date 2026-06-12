@@ -30,12 +30,6 @@ export type SpeechMetrics = {
   longestPauseSeconds?: number;
 };
 
-export type TutorFix = {
-  original: string;
-  corrected: string;
-  note: string;
-};
-
 const SERVICE_LABELS: Record<TutorService, string> = {
   stt: "speech recognition",
   chat: "tutor chat",
@@ -186,33 +180,18 @@ export function parseTutorJson(raw: string) {
     const parsed = JSON.parse(cleaned) as Record<string, unknown>;
     return {
       reply: getString(parsed.reply),
-      fixes: parseTutorFixes(parsed.fixes),
+      mine: getString(parsed.mine),
       rewrite: getString(parsed.rewrite),
-      explanation: getString(parsed.explanation),
+      note: getString(parsed.note) || getString(parsed.explanation),
     };
   } catch {
     return {
       reply: cleaned,
-      fixes: [],
+      mine: "",
       rewrite: "",
-      explanation: "",
+      note: "",
     };
   }
-}
-
-function parseTutorFixes(value: unknown): TutorFix[] {
-  if (!Array.isArray(value)) return [];
-  return value
-    .map((item) => {
-      const record = asRecord(item);
-      if (!record) return null;
-      return {
-        original: getString(record.original).trim(),
-        corrected: getString(record.corrected).trim(),
-        note: getString(record.note).trim(),
-      };
-    })
-    .filter((fix): fix is TutorFix => Boolean(fix?.original && fix.corrected));
 }
 
 export function extractText(result: unknown) {

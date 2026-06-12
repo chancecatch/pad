@@ -1,7 +1,7 @@
 /* CHANGE NOTE
 Why: Keep local tutor recording and playback configurable without noisy diagnostics
-What changed: Added voice/microphone selectors, af_alloy default voice, first-gesture playback unlock, fix-pair feedback display, corrected mine replay, and mobile-safe mic/audio cleanup
-Behaviour/Assumptions: Mine replay preserves the learner's original intent by applying fix pairs first; mobile browsers get a fresh mic stream per recording
+What changed: Added voice/microphone selectors, af_alloy default voice, first-gesture playback unlock, note-based feedback display, separated mine/rewrite replay, and mobile-safe mic/audio cleanup
+Behaviour/Assumptions: Mine replay uses the learner-preserving corrected sentence, while rewrite replay uses the freer natural restatement
 Rollback: git checkout -- src/components/VoiceTutor.tsx
 - mj
 */
@@ -20,15 +20,10 @@ type SpeechMetrics = {
 type Msg = {
   role: "user" | "assistant";
   text: string;
-  fixes?: TutorFix[];
+  mine?: string;
   rewrite?: string;
-  explanation?: string;
-  showRewrite?: boolean;
-};
-type TutorFix = {
-  original: string;
-  corrected: string;
   note?: string;
+  showRewrite?: boolean;
 };
 type TutorApiErrorPayload = {
   error?: string;
@@ -219,9 +214,9 @@ export default function VoiceTutor({
       const reply = data?.reply ?? "";
       if (data?.learnerProfile?._id) onProfileUpdate?.(data.learnerProfile);
       const feedback = {
-        fixes: normalizeFixes(data?.fixes),
+        mine: data?.mine ?? "",
         rewrite: data?.rewrite ?? "",
-        explanation: data?.explanation ?? "",
+        note: data?.note ?? data?.explanation ?? "",
       };
       setUserPracticeText(buildCorrectedPracticeText(userText, feedback));
       setUserRewriteText(feedback.rewrite);
@@ -776,8 +771,7 @@ export default function VoiceTutor({
   const canPlayUserRewrite = !busy && !userPracticeAudioBusy && Boolean(lastUserRewriteText.trim());
   const shouldShowMicDiagnostics = recording || Boolean(micTrackStatus) || Boolean(micNotice);
   const renderFeedback = (m: Msg): string[] => [
-    ...(m.fixes?.length ? m.fixes.map(formatFixLine) : []),
-    m.explanation && `Note: ${m.explanation}`,
+    m.note && `Note: ${m.note}`,
     m.showRewrite && m.rewrite && `Rewrite: ${m.rewrite}`,
   ].filter((line): line is string => Boolean(line));
 
@@ -1010,9 +1004,9 @@ export default function VoiceTutor({
 
 function attachFeedbackToLastUser(messages: Msg[], feedback: Partial<Msg>) {
   const hasFeedback = Boolean(
-    feedback.fixes?.length ||
+    feedback.mine ||
       feedback.rewrite ||
-      feedback.explanation
+      feedback.note
   );
   if (!hasFeedback) return messages;
 
@@ -1037,76 +1031,18 @@ function revealRewriteOnLastUser(messages: Msg[], rewrite: string) {
   return next;
 }
 
-function normalizeFixes(value: unknown): TutorFix[] {
-  if (!Array.isArray(value)) return [];
-  const fixes: TutorFix[] = [];
-  for (const item of value) {
-    if (!item || typeof item !== "object") continue;
-    const record = item as Record<string, unknown>;
-    const original = typeof record.original === "string" ? record.original.trim() : "";
-    const corrected = typeof record.corrected === "string" ? record.corrected.trim() : "";
-    const note = typeof record.note === "string" ? record.note.trim() : "";
-    if (original && corrected) fixes.push({ original, corrected, note });
-  }
-  return fixes;
-}
-
 function buildCorrectedPracticeText(originalText: string, feedback: Partial<Msg>) {
   const original = cleanPracticeText(originalText);
-  const rewrite = cleanPracticeText(feedback.rewrite);
-  const fixes = feedback.fixes ?? [];
-  const rewriteCandidate =
-    isLearnerPracticeCandidate(original, rewrite) && !isPracticeRewriteTooCompressed(original, rewrite)
-      ? rewrite
-      : "";
+  const mine = cleanPracticeText(feedback.mine);
 
-  if (fixes.length) {
-    const corrected = applyTutorFixes(original, fixes);
-    const practiceText = cleanPracticeText(cleanPracticeDisfluencies(corrected.text));
-    if (rewriteCandidate && shouldPreferRewriteForMine(original, practiceText, corrected.appliedCount, fixes.length)) return rewriteCandidate;
-    if (practiceText !== original) return practiceText;
+  if (isLearnerPracticeCandidate(original, mine) && !isPracticeTextTooCompressed(original, mine)) {
+    return mine;
   }
 
   const cleanedOriginal = cleanPracticeText(cleanPracticeDisfluencies(original));
-  if (rewriteCandidate) return rewriteCandidate;
   if (cleanedOriginal !== original) return cleanedOriginal;
 
   return original;
-}
-
-function applyTutorFixes(original: string, fixes: TutorFix[]) {
-  let text = original;
-  let appliedCount = 0;
-
-  for (const fix of fixes) {
-    const next = replaceFirstTutorFix(text, fix);
-    if (next !== text) {
-      text = next;
-      appliedCount += 1;
-    }
-  }
-
-  return { text: text.trim(), appliedCount };
-}
-
-function replaceFirstTutorFix(text: string, fix: TutorFix) {
-  const original = cleanPracticeText(fix.original);
-  const corrected = cleanPracticeText(fix.corrected);
-  if (!text || !original || !corrected) return text;
-
-  const exactIndex = text.indexOf(original);
-  if (exactIndex >= 0) {
-    return `${text.slice(0, exactIndex)}${corrected}${text.slice(exactIndex + original.length)}`;
-  }
-
-  const lowerIndex = text.toLowerCase().indexOf(original.toLowerCase());
-  if (lowerIndex >= 0) {
-    return `${text.slice(0, lowerIndex)}${corrected}${text.slice(lowerIndex + original.length)}`;
-  }
-
-  const looseRange = findLoosePhraseRange(text, original);
-  if (!looseRange) return text;
-  return `${text.slice(0, looseRange.start)}${corrected}${text.slice(looseRange.end)}`;
 }
 
 function cleanPracticeText(value: unknown) {
@@ -1156,28 +1092,17 @@ function collapseRepeatedPracticePhrases(value: string) {
   return result.join(" ");
 }
 
-function shouldPreferRewriteForMine(original: string, practiceText: string, appliedCount: number, fixCount: number) {
-  if (!practiceText || practiceText === original) return true;
-  if (appliedCount < fixCount) return true;
-  if (hasPracticeDisfluency(practiceText)) return true;
-  return practiceWordCount(original) >= 40 && practiceWordCount(practiceText) > practiceWordCount(original) * 0.75;
-}
-
-function hasPracticeDisfluency(value: string) {
-  return /\b(?:um+|uh+|er+|ah+|you know|i mean)\b/i.test(value) || /\b(\w+(?:'\w+)?)(?:[\s,]+\1\b)+/i.test(value);
-}
-
-function isPracticeRewriteTooCompressed(original: string, candidate: string) {
+function isPracticeTextTooCompressed(original: string, candidate: string) {
   const sourceWords = practiceWordCount(cleanPracticeDisfluencies(original));
-  const rewriteWords = practiceWordCount(candidate);
+  const candidateWords = practiceWordCount(candidate);
   if (sourceWords < 45) return false;
-  if (rewriteWords >= Math.max(24, Math.floor(sourceWords * 0.45))) return false;
+  if (candidateWords >= Math.max(36, Math.floor(sourceWords * 0.5))) return false;
 
   const sourceTerms = uniqueSignificantPracticeWords(cleanPracticeDisfluencies(original));
-  const rewriteTerms = uniqueSignificantPracticeWords(candidate);
+  const candidateTerms = uniqueSignificantPracticeWords(candidate);
   if (sourceTerms.length < 8) return false;
-  const covered = sourceTerms.filter((word) => rewriteTerms.includes(word)).length / sourceTerms.length;
-  return covered < 0.55;
+  const covered = sourceTerms.filter((word) => candidateTerms.includes(word)).length / sourceTerms.length;
+  return covered < 0.52;
 }
 
 function practiceWordCount(value: string) {
@@ -1188,12 +1113,12 @@ function normalizePracticeToken(value: string) {
   return value.toLowerCase().replace(/[^\w']/g, "");
 }
 
-function looksLikeFixSummary(value: string) {
+function looksLikeCorrectionPairText(value: string) {
   return value.includes("->");
 }
 
 function isLearnerPracticeCandidate(original: string, candidate: string) {
-  if (!original || !candidate || looksLikeFixSummary(candidate)) return false;
+  if (!original || !candidate || looksLikeCorrectionPairText(candidate)) return false;
   if (looksLikeTutorReply(candidate)) return false;
   if (normalizePracticeText(candidate) === normalizePracticeText(original)) return true;
 
@@ -1223,47 +1148,6 @@ function uniqueSignificantPracticeWords(value: string) {
 
 function normalizePracticeText(value: string) {
   return value.toLowerCase().replace(/[^\w\s']/g, " ").replace(/\s+/g, " ").trim();
-}
-
-function findLoosePhraseRange(text: string, phrase: string) {
-  const normalizedText = normalizePracticeTextWithMap(text);
-  const normalizedPhrase = normalizePracticeText(phrase);
-  const start = normalizedText.text.indexOf(normalizedPhrase);
-  if (start < 0) return null;
-
-  const end = start + normalizedPhrase.length - 1;
-  const sourceStart = normalizedText.map[start];
-  const sourceEnd = normalizedText.map[end] + 1;
-  if (typeof sourceStart !== "number" || typeof sourceEnd !== "number") return null;
-  return { start: sourceStart, end: sourceEnd };
-}
-
-function normalizePracticeTextWithMap(value: string) {
-  let text = "";
-  const map: number[] = [];
-
-  for (let index = 0; index < value.length; index += 1) {
-    const char = value[index];
-    if (/[\w']/i.test(char)) {
-      text += char.toLowerCase();
-      map.push(index);
-    } else if (text && text[text.length - 1] !== " ") {
-      text += " ";
-      map.push(index);
-    }
-  }
-
-  while (text.endsWith(" ")) {
-    text = text.slice(0, -1);
-    map.pop();
-  }
-
-  return { text, map };
-}
-
-function formatFixLine(fix: TutorFix) {
-  const note = fix.note ? ` (${fix.note})` : "";
-  return `Fix: ${fix.original} -> ${fix.corrected}${note}`;
 }
 
 const selectStyle = {

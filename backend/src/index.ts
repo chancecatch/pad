@@ -1,6 +1,6 @@
 /* CHANGE NOTE
 Why: Save tutor feedback and make learner memory age like a human tutor's memory
-What changed: Practice updates now separate validated fix pairs, durable learning insights, expiring conversational notes, and profile-scoped recent sessions
+What changed: Practice updates now separate learner-preserving mine text, freer rewrites, durable learning insights, expiring conversational notes, and profile-scoped recent sessions
 Behaviour/Assumptions: Chat API remains backward-compatible and older noisy profile memory may exist
 Rollback: git checkout -- src/index.ts
 - mj
@@ -88,7 +88,7 @@ app.get("/chat/sessions/:id", async (req, res) => {
 
 // Add a chat message
 app.post("/chat/sessions/:id/messages", async (req, res) => {
-  const { role, text, fixes, rewrite, explanation } = req.body || {};
+  const { role, text, mine, rewrite, note, explanation } = req.body || {};
   if (!role || !text) return res.status(400).json({ error: "invalid_payload" });
 
   const sess = await ChatSession.findByIdAndUpdate(
@@ -98,9 +98,9 @@ app.post("/chat/sessions/:id/messages", async (req, res) => {
         messages: {
           role,
           text: cleanString(text, 5000),
-          fixes: cleanFixes(fixes),
+          mine: cleanString(mine, 2500),
           rewrite: cleanString(rewrite, 2000),
-          explanation: cleanString(explanation, 700),
+          note: cleanString(note ?? explanation, 700),
         },
       },
     },
@@ -271,41 +271,42 @@ function buildInitialMemory(name: string, learningGoal: unknown, interests: unkn
 function updatePracticeMemory(memory: any, payload: any, currentLevel: string) {
   const userMessage = cleanString(payload.userMessage, 320);
   const assistantReply = cleanString(payload.assistantReply, 320);
-  const fixes = cleanFixes(payload.fixes);
+  const mine = cleanString(payload.mine, 2500);
   const rewrite = cleanString(payload.rewrite, 2000);
-  const explanation = cleanString(payload.explanation, 700);
-  const fixSummary = formatFixes(fixes);
+  const note = cleanString(payload.note ?? payload.explanation, 700);
+  const mineIsUseful = isUsefulMine(userMessage, mine, assistantReply);
   const rewriteIsUseful = isUsefulRewrite(userMessage, rewrite, assistantReply);
-  const feedbackSummary = fixSummary || rewrite;
-  const memoryExplanation = summarizeExplanationForMemory(explanation, fixes);
-  const correctionIsUseful = fixes.length > 0 || rewriteIsUseful;
+  const practiceAlternative = rewriteIsUseful ? rewrite : mineIsUseful ? mine : "";
+  const feedbackSummary = mineIsUseful ? mine : practiceAlternative;
+  const memoryNote = summarizeNoteForMemory(note);
+  const correctionIsUseful = mineIsUseful || rewriteIsUseful;
   const now = new Date();
 
   const recurringErrors = appendCapped(
     cleanMemoryList(memory.recurringErrors || []),
     correctionIsUseful
-      ? `${userMessage || "Recent utterance"} -> ${feedbackSummary}${memoryExplanation ? ` (${memoryExplanation})` : ""}`
+      ? `${userMessage || "Recent utterance"} -> ${feedbackSummary}${memoryNote ? ` (${memoryNote})` : ""}`
       : "",
     10
   );
-  const usefulPhrases = appendCapped(cleanMemoryList(memory.usefulPhrases || []), correctionIsUseful ? rewrite : "", 10);
+  const usefulPhrases = appendCapped(cleanMemoryList(memory.usefulPhrases || []), correctionIsUseful ? practiceAlternative : "", 10);
   const recentTopics = appendCapped(memory.recentTopics || [], userMessage, 12);
-  const lastFeedback = [correctionIsUseful ? memoryExplanation : ""]
+  const lastFeedback = [correctionIsUseful ? memoryNote : ""]
     .filter(Boolean)
     .slice(0, 6);
   const learningInsights = updateLearningInsights(memory.learningInsights || [], {
     correctionIsUseful,
     userMessage,
     feedbackSummary,
-    fixes,
+    mine,
     rewrite,
-    explanation: memoryExplanation,
+    note: memoryNote,
     now,
   });
   const episodicNotes = updateEpisodicNotes(memory.episodicNotes || [], userMessage, now);
   const levelEvidence = appendCapped(
     cleanLevelEvidence(memory.levelEvidence || []),
-    buildLevelEvidence(userMessage, correctionIsUseful, memoryExplanation),
+    buildLevelEvidence(userMessage, correctionIsUseful, memoryNote),
     12
   );
 
@@ -343,36 +344,8 @@ function cleanString(value: unknown, maxLength: number) {
   return typeof value === "string" ? value.trim().replace(/\s+/g, " ").slice(0, maxLength) : "";
 }
 
-function cleanFixes(value: unknown) {
-  if (!Array.isArray(value)) return [];
-  const seen = new Set<string>();
-  const fixes = [];
-  for (const item of value) {
-    const fix = item && typeof item === "object" ? (item as any) : null;
-    if (!fix) continue;
-    const original = cleanString(fix.original, 220);
-    const corrected = cleanString(fix.corrected, 220);
-    const note = cleanString(fix.note, 80);
-    const key = `${normalizeText(original)}->${normalizeText(corrected)}`;
-    if (!original || !corrected || normalizeText(original) === normalizeText(corrected) || seen.has(key)) continue;
-    seen.add(key);
-    fixes.push({ original, corrected, note });
-    if (fixes.length >= 5) break;
-  }
-  return fixes;
-}
-
-function formatFixes(fixes: Array<{ original: string; corrected: string; note?: string }>) {
-  return fixes.map((fix) => `${fix.original} -> ${fix.corrected}`).join("; ");
-}
-
-function summarizeExplanationForMemory(explanation: string, fixes: Array<{ note?: string }>) {
-  const notes = fixes
-    .map((fix) => cleanString(fix.note, 60))
-    .filter(Boolean);
-  const uniqueNotes = [...new Set(notes)];
-  if (uniqueNotes.length) return uniqueNotes.slice(0, 3).join(", ");
-  return trimWords(explanation, 14);
+function summarizeNoteForMemory(note: string) {
+  return trimWords(note, 14);
 }
 
 function cleanStringArray(value: unknown, maxItems: number, maxLength: number) {
@@ -400,13 +373,13 @@ function updateLearningInsights(list: any[], payload: any) {
   const existing = cleanLearningInsights(list);
   if (!payload.correctionIsUseful) return existing.slice(0, LEARNING_INSIGHT_LIMIT);
 
-  const key = buildLearningInsightKey(payload.explanation, payload.feedbackSummary);
+  const key = buildLearningInsightKey(payload.note, payload.feedbackSummary);
   if (!key) return existing.slice(0, LEARNING_INSIGHT_LIMIT);
 
-  const text = payload.explanation
-    ? cleanString(payload.explanation, 80)
+  const text = payload.note
+    ? cleanString(payload.note, 80)
     : `Practice this pattern: ${cleanString(payload.feedbackSummary, 120)}`;
-  const example = cleanString(payload.rewrite || payload.feedbackSummary || payload.userMessage, 220);
+  const example = cleanString(payload.rewrite || payload.mine || payload.feedbackSummary || payload.userMessage, 220);
   const previous = existing.find((item) => item.key === key);
   const updated = {
     key,
@@ -439,8 +412,8 @@ function cleanLearningInsights(list: any[]) {
     .filter((item) => item.key && item.text && isUsefulMemoryLine(item.text));
 }
 
-function buildLearningInsightKey(explanation: string, feedbackSummary: string) {
-  const source = explanation && !isNoCorrectionText(explanation) ? explanation : feedbackSummary;
+function buildLearningInsightKey(note: string, feedbackSummary: string) {
+  const source = note && !isNoCorrectionText(note) ? note : feedbackSummary;
   return normalizeText(cleanString(source, 120)).slice(0, 120);
 }
 
@@ -523,9 +496,9 @@ function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
 }
 
-function buildLevelEvidence(userMessage: string, correctionNeeded: boolean, explanation: string) {
+function buildLevelEvidence(userMessage: string, correctionNeeded: boolean, noteText: string) {
   const wordCount = countWords(userMessage);
-  const note = explanation ? ` note=${explanation}` : "";
+  const note = noteText ? ` note=${noteText}` : "";
   return `words=${wordCount} correction=${correctionNeeded ? "yes" : "no"}${note}`;
 }
 
@@ -585,17 +558,40 @@ function isUsefulRewrite(userMessage: string, rewrite: string, assistantReply: s
   return true;
 }
 
+function isUsefulMine(userMessage: string, mine: string, assistantReply: string) {
+  if (!mine || isNoCorrectionText(mine)) return false;
+  const normalizedMine = normalizeText(mine);
+  if (!normalizedMine) return false;
+  if (isTutorReplyLike(mine, userMessage, assistantReply)) return false;
+  if (isMineTooCompressed(userMessage, mine)) return false;
+  if (normalizedMine === normalizeText(userMessage) && !hasSpokenDisfluency(userMessage)) return false;
+  return true;
+}
+
 function isRewriteTooCompressed(userMessage: string, rewrite: string) {
   const sourceWords = countWords(stripSpokenDisfluencies(userMessage));
   const rewriteWords = countWords(rewrite);
   if (sourceWords < 45) return false;
-  if (rewriteWords >= Math.max(24, Math.floor(sourceWords * 0.45))) return false;
+  if (rewriteWords >= Math.max(32, Math.floor(sourceWords * 0.55))) return false;
 
   const sourceTerms = uniqueSignificantWords(stripSpokenDisfluencies(userMessage));
   const rewriteTerms = uniqueSignificantWords(rewrite);
   if (sourceTerms.length < 8) return false;
   const covered = sourceTerms.filter((word) => rewriteTerms.includes(word)).length / sourceTerms.length;
-  return covered < 0.55;
+  return covered < 0.62;
+}
+
+function isMineTooCompressed(userMessage: string, mine: string) {
+  const sourceWords = countWords(stripSpokenDisfluencies(userMessage));
+  const mineWords = countWords(mine);
+  if (sourceWords < 45) return false;
+  if (mineWords >= Math.max(36, Math.floor(sourceWords * 0.5))) return false;
+
+  const sourceTerms = uniqueSignificantWords(stripSpokenDisfluencies(userMessage));
+  const mineTerms = uniqueSignificantWords(mine);
+  if (sourceTerms.length < 8) return false;
+  const covered = sourceTerms.filter((word) => mineTerms.includes(word)).length / sourceTerms.length;
+  return covered < 0.52;
 }
 
 function stripSpokenDisfluencies(value: string) {
@@ -605,6 +601,14 @@ function stripSpokenDisfluencies(value: string) {
     .replace(/\b(\w+(?:'\w+)?)(?:[\s,]+\1\b)+/gi, "$1")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function hasSpokenDisfluency(value: string) {
+  return (
+    /\b(?:um+|uh+|er+|ah+|you know|i mean)\b/i.test(value) ||
+    /,\s*like\b|\blike\s*,|\b(?:just|basically|actually|so|but|and|or|can|can't|could|would|should|to)\s+like\b/i.test(value) ||
+    /\b(\w+(?:'\w+)?)(?:[\s,]+\1\b)+/i.test(value)
+  );
 }
 
 function isTutorReplyLike(candidate: string, userMessage: string, assistantReply: string) {
