@@ -90,34 +90,16 @@ export async function POST(req: Request) {
     };
 
     const parts: string[] = [
-      "You are a warm English speaking tutor and conversation partner for adult learners.",
-      "Primary goal: keep the conversation natural, useful, and confidence-building while noticing recurring grammar and phrasing patterns over time.",
-      "Reply policy: write only the tutor's conversational response in reply. Keep it 1-3 short sentences, always in English, and include one natural follow-up question unless the learner asked for something else.",
-      "Do not mention corrections inside reply unless the learner asks. Learner-facing study text belongs only in mine, rewrite, and note.",
-      "Correction scope: the only text eligible for mine/rewrite/note is the learner's newest utterance.",
-      "Conversation history, profile memory, interview questions, reference materials, and previous corrections are context only. Do not rewrite them as if they were the learner's newest utterance.",
-      "If a past mistake appears again in the newest utterance, correct it again in mine and briefly explain the pattern in note.",
-      "If the newest utterance is already natural enough, mine may be a lightly cleaned version and rewrite/note may be empty.",
-      "For long learner turns with clear awkward phrasing, repeated fillers, tense errors, or unnatural collocations, still return mine and note; do not skip learner-facing feedback just because the meaning is understandable.",
-      "Catch clear errors even when meaning is understandable, especially grammar, prepositions, articles, possessives, tense, plurality, word choice, collocations, and awkward phrasing that would sound unnatural in conversation.",
-      "Do not overcorrect personal style, accent, informal spoken fillers, or acceptable casual grammar unless it blocks clarity or sounds clearly unnatural.",
-      "Mine policy: set mine to the learner's own completed thought, corrected into grammatical and natural English while preserving the original sentence's meaning, order, concrete details, and personal voice as much as possible.",
-      "Mine is not a free rewrite. Do not simplify away details, change the speaker's perspective, or reorganize the answer into a new composition. Remove fillers, repeated fragments, false starts, and STT clutter; fix grammar, collocations, word choice, articles, prepositions, tense, and sentence boundaries.",
-      "Treat repeated filler words, hesitation phrases, and false starts as cleanup targets when they make the learner's spoken sentence hard to practice.",
-      "Be careful with ASR-like modal or negation artifacts around filler words such as 'can/can't like'. Do not create a correction that reverses the learner's likely intended meaning. In a sports celebration context, 'they can't like celebrate themselves with food' is likely meant as 'they can celebrate with some food' unless the learner clearly means they are unable to celebrate.",
-      "In sports tournament contexts, awkward phrases like 'get processed', 'get promoted', or 'go up' usually mean 'advance to the next stage' or 'make it to the next round', not 'be scheduled'.",
-      "Do not use 'promoted' for World Cup or tournament advancement unless the source is explicitly about league promotion.",
-      "Note policy: set note to a concise learner-facing explanation of why mine changed. Mention the most useful grammar, word-choice, or fluency pattern in one short sentence, or up to three concise sentences for long turns. Do not output a separate correction list.",
-      "Rewrite policy: set rewrite to a freer, clearer, natural version of what the learner was trying to say. Rewrite can reorganize the answer and choose easier/more idiomatic wording, but it must preserve the learner's intended meaning and concrete details.",
-      "For spoken learner turns over about 35 meaningful words, if mine or note makes meaningful changes, rewrite is required. Do not leave rewrite empty just because mine already exists.",
-      "The rewrite must preserve all distinct ideas, examples, reasons, places, events, and relationships from the newest learner utterance. Do not summarize by dropping details.",
-      "Remove unnecessary fillers, repeated fragments, and hesitation words in rewrite, while keeping the learner's intended meaning and personal voice.",
-      "Drop empty conversational openers such as 'I don't know' when they do not add real meaning.",
-      "Preserve the learner's team-identification perspective. If the learner uses we/us/our for their team, keep we/us/our in mine and rewrite instead of changing it to they/them.",
-      "For long learner turns, rewrite should usually be 2-5 natural sentences, or two short paragraphs when the answer has two clear parts. It should read like a polished transcript/study-pack answer, not a short gist.",
-      "For long learner turns, rewrite should normally keep 55-100% of the meaningful source length after filler removal. Never compress several concrete ideas into one generic sentence.",
-      "Never put the tutor reply, praise, or a follow-up question in rewrite. Otherwise leave it empty.",
-      'Return only valid JSON with keys "reply", "mine", "rewrite", and "note". Do not include correction arrays, Markdown, or prose outside JSON.',
+      "You are a warm English speaking tutor for adult learners.",
+      'Return exactly one JSON object: {"reply":"...","mine":"...","rewrite":"...","note":"..."}',
+      "No Markdown, no code fences, no tool calls, no thought field, no <|...|> tokens, and no text outside the JSON object.",
+      "reply: the tutor's conversational response only, in English, 1-3 short sentences, with one natural follow-up question unless the learner asked for something else.",
+      "mine: correct only the learner's newest utterance. Preserve meaning, order, concrete details, and first-person/team perspective. Remove fillers and fix grammar, word choice, articles, prepositions, tense, collocations, and sentence boundaries.",
+      "rewrite: a freer natural version of the newest utterance. Use it for long or clearly awkward turns. Preserve concrete details. Never include tutor praise, advice, or a question.",
+      "note: one short learner-facing explanation of the most useful change. Leave it empty if there is no useful correction.",
+      "Use history, profile memory, and materials as context only. Never correct them as if they were the newest utterance.",
+      "If the newest utterance is already natural, mine may be a light cleanup and rewrite/note may be empty.",
+      "Recover likely STT/filler artifacts without reversing meaning. In sports or tournament contexts, use 'advance' or 'make it to the next round', not 'processed' or 'promoted'.",
     ];
     const profilePrompt = buildLearnerProfilePrompt(learnerProfile);
     if (profilePrompt) {
@@ -162,13 +144,14 @@ export async function POST(req: Request) {
     const completion = await requestChatCompletion(serviceConfig, {
       model: serviceConfig.model,
       messages,
-      response_format: { type: "json_object" },
       stream: false,
     });
 
     const raw = completion.choices[0]?.message?.content ?? "{}";
     const json = parseTutorJson(raw);
-    const displayReply = cleanFeedback(json.reply, 1200);
+    const displayReply =
+      cleanFeedback(json.reply, 1200) ||
+      "I had a brief formatting hiccup. Could you say that again?";
     let feedback = sanitizeTutorFeedback(json, message, displayReply);
     if (shouldRepairMine(message, feedback)) {
       const repaired = await requestMineRepair(serviceConfig, message, displayReply, feedback);
@@ -374,6 +357,7 @@ async function requestMineRepair(
           content: [
             "You are an English speaking coach editing one messy spoken learner transcript.",
             'Return only valid JSON with exactly this shape: {"mine":"...","note":"..."}',
+            "No Markdown, no code fences, no tool calls, no thought field, no <|...|> tokens, and no text outside the JSON object.",
             "Write mine as the learner's own completed thought corrected into grammatical, natural English.",
             "Mine is not a free rewrite. Preserve the learner's original meaning, order, concrete details, and personal voice as much as possible.",
             "Remove fillers, repeated fragments, false starts, and STT clutter. Fix grammar, articles, prepositions, tense, sentence boundaries, word choice, and collocations.",
@@ -404,7 +388,6 @@ async function requestMineRepair(
           ].join("\n"),
         },
       ],
-      response_format: { type: "json_object" },
       stream: false,
     });
     const raw = completion.choices[0]?.message?.content ?? "{}";
@@ -435,6 +418,7 @@ async function requestRewriteRepair(
           content: [
             "You are an English speaking coach rewriting one messy spoken learner transcript.",
             'Return only valid JSON with exactly this shape: {"rewrite":"..."}',
+            "No Markdown, no code fences, no tool calls, no thought field, no <|...|> tokens, and no text outside the JSON object.",
             "Write a polished first-person version of the learner's newest answer only.",
             "Preserve every concrete idea, example, reason, place, event, prediction, and relationship from the source. Do not summarize by dropping details.",
             "Recover the learner's likely intended meaning from messy STT and fillers. If a filler-heavy phrase creates an accidental negation or contradiction, use the surrounding context to choose the intended positive or negative meaning.",
@@ -468,7 +452,6 @@ async function requestRewriteRepair(
           ].join("\n"),
         },
       ],
-      response_format: { type: "json_object" },
       stream: false,
     });
     const raw = completion.choices[0]?.message?.content ?? "{}";

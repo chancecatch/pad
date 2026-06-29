@@ -176,22 +176,101 @@ export function parseTutorJson(raw: string) {
     .replace(/```$/i, "")
     .trim();
 
-  try {
-    const parsed = JSON.parse(cleaned) as Record<string, unknown>;
+  const parsed = parseTutorRecord(cleaned) || parseTutorRecord(extractFirstJsonObject(cleaned));
+  if (parsed) {
     return {
       reply: getString(parsed.reply),
       mine: getString(parsed.mine),
       rewrite: getString(parsed.rewrite),
       note: getString(parsed.note) || getString(parsed.explanation),
     };
-  } catch {
-    return {
-      reply: cleaned,
-      mine: "",
-      rewrite: "",
-      note: "",
-    };
   }
+
+  const partial = extractPartialTutorFields(cleaned);
+  if (partial.reply || partial.mine || partial.rewrite || partial.note) return partial;
+
+  return {
+    reply: looksLikeBrokenTutorJson(cleaned) ? "" : cleaned,
+    mine: "",
+    rewrite: "",
+    note: "",
+  };
+}
+
+function parseTutorRecord(value: string | null) {
+  if (!value) return null;
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function extractFirstJsonObject(value: string) {
+  const start = value.indexOf("{");
+  if (start < 0) return null;
+
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (let index = start; index < value.length; index += 1) {
+    const char = value[index];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (char === "\\") {
+        escaped = true;
+      } else if (char === "\"") {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (char === "\"") {
+      inString = true;
+    } else if (char === "{") {
+      depth += 1;
+    } else if (char === "}") {
+      depth -= 1;
+      if (depth === 0) return value.slice(start, index + 1);
+    }
+  }
+
+  return null;
+}
+
+function extractPartialTutorFields(value: string) {
+  return {
+    reply: extractPartialJsonString(value, "reply"),
+    mine: extractPartialJsonString(value, "mine"),
+    rewrite: extractPartialJsonString(value, "rewrite"),
+    note: extractPartialJsonString(value, "note") || extractPartialJsonString(value, "explanation"),
+  };
+}
+
+function extractPartialJsonString(value: string, key: string) {
+  const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = value.match(new RegExp(`"${escapedKey}"\\s*:\\s*"((?:\\\\.|[^"\\\\])*)`));
+  if (!match) return "";
+
+  try {
+    return JSON.parse(`"${match[1]}"`);
+  } catch {
+    return match[1].replace(/\\"/g, "\"").replace(/\\\\/g, "\\").trim();
+  }
+}
+
+function looksLikeBrokenTutorJson(value: string) {
+  return (
+    /^\s*[{[]/.test(value) ||
+    value.includes("<|tool_response>") ||
+    value.includes("<|tool_call>") ||
+    /"thought"\s*:/.test(value)
+  );
 }
 
 export function extractText(result: unknown) {
