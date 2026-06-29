@@ -63,6 +63,8 @@ type ClientBody = {
   speechMetrics?: SpeechMetrics | null;
 };
 
+const TUTOR_CHAT_MODEL = "gemma4:12b-it-qat";
+
 export async function POST(req: Request) {
   let serviceConfig: ReturnType<typeof resolveLocalServiceConfig> | null = null;
 
@@ -82,6 +84,10 @@ export async function POST(req: Request) {
     } = (await req.json()) as ClientBody;
 
     serviceConfig = resolveLocalServiceConfig("chat");
+    serviceConfig = {
+      ...serviceConfig,
+      model: TUTOR_CHAT_MODEL,
+    };
 
     const parts: string[] = [
       "You are a warm English speaking tutor and conversation partner for adult learners.",
@@ -188,6 +194,7 @@ export async function POST(req: Request) {
       mine: feedback.mine,
       rewrite: feedback.rewrite,
       note: feedback.note,
+      chatModel: serviceConfig.model,
       learnerProfile: updatedProfile,
     });
   } catch (err) {
