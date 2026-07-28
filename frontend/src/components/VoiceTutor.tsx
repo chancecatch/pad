@@ -293,7 +293,7 @@ export default function VoiceTutor({
       const response = await fetch("/api/tutor/tts", { cache: "no-store" });
       const data = await response.json();
       if (!response.ok) throw new Error(data?.message || data?.error || "Could not load voices");
-      const voices = normalizeVoiceOptions(data?.voices);
+      const voices = normalizeVoiceOptions(data?.voices ?? data?.data);
       if (voices.length) {
         setTtsVoices(voices);
         setSelectedVoice((current) => voices.some((voice) => voice.id === current) ? current : voices[0].id);
