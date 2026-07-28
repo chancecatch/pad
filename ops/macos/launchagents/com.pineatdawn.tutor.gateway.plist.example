@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.pineatdawn.tutor.gateway</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>__NODE_BIN__</string>
+    <string>__WEB_ROOT__/scripts/tutor-gateway.mjs</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>__WEB_ROOT__</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key>
+    <string>__HOME__</string>
+    <key>TUTOR_GATEWAY_HOST</key>
+    <string>127.0.0.1</string>
+    <key>TUTOR_GATEWAY_PORT</key>
+    <string>8787</string>
+    <key>TUTOR_GATEWAY_TOKEN_FILE</key>
+    <string>__GATEWAY_TOKEN_FILE__</string>
+    <key>TUTOR_GATEWAY_STT_BASE_URL</key>
+    <string>http://127.0.0.1:8000</string>
+    <key>TUTOR_GATEWAY_TTS_BASE_URL</key>
+    <string>http://127.0.0.1:8000</string>
+    <key>TUTOR_GATEWAY_CHAT_BASE_URL</key>
+    <string>http://127.0.0.1:11434</string>
+    <key>TUTOR_GATEWAY_MAX_BODY_MB</key>
+    <string>50</string>
+    <key>TUTOR_GATEWAY_TIMEOUT_MS</key>
+    <string>120000</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+  <key>StandardOutPath</key>
+  <string>__LOG_DIRECTORY__/gateway.stdout.log</string>
+  <key>StandardErrorPath</key>
+  <string>__LOG_DIRECTORY__/gateway.stderr.log</string>
+</dict>
+</plist>

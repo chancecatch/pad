@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.pineatdawn.tutor.mlx-audio</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>__PYTHON_BIN__</string>
+    <string>__WEB_ROOT__/scripts/mlx-audio-server.py</string>
+    <string>--host</string>
+    <string>127.0.0.1</string>
+    <string>--port</string>
+    <string>8000</string>
+    <string>--log-dir</string>
+    <string>__LOG_DIRECTORY__</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>__WEB_ROOT__</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key>
+    <string>__HOME__</string>
+    <key>PATH</key>
+    <string>__PAD_ENV_PREFIX__/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <key>PYTHONUNBUFFERED</key>
+    <string>1</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+  <key>StandardOutPath</key>
+  <string>__LOG_DIRECTORY__/mlx-audio.stdout.log</string>
+  <key>StandardErrorPath</key>
+  <string>__LOG_DIRECTORY__/mlx-audio.stderr.log</string>
+</dict>
+</plist>

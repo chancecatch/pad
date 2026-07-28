@@ -17,6 +17,8 @@ import {
   tutorErrorResponse,
 } from "@/lib/tutorProviders";
 
+const TUTOR_STT_MODEL = "mlx-community/whisper-large-v3-turbo-asr-fp16";
+
 export async function POST(req: Request) {
   let serviceConfig: ReturnType<typeof resolveLocalServiceConfig> | null = null;
 
@@ -29,7 +31,10 @@ export async function POST(req: Request) {
     }
 
     const clientMaxInputLevel = parseClientMaxInputLevel(formData.get("clientMaxInputLevel"));
-    serviceConfig = resolveLocalServiceConfig("stt");
+    serviceConfig = {
+      ...resolveLocalServiceConfig("stt"),
+      model: TUTOR_STT_MODEL,
+    };
     const tr = await createTranscription(serviceConfig, file);
 
     const text = extractText(tr);
@@ -65,6 +70,10 @@ async function createTranscription(
   form.append("model", config.model);
   form.append("file", file, file.name || "speech.webm");
   form.append("response_format", "verbose_json");
+  form.append("word_timestamps", "true");
+  // MLX-Audio 0.4.6 forwards its singular timestamp_granularities field to
+  // Whisper, which rejects it. Keep the OpenAI-style [] field for the legacy
+  // server during cutover; MLX ignores that unknown field and uses this flag.
   form.append("timestamp_granularities[]", "word");
   form.append("language", process.env.LOCAL_STT_LANGUAGE || "en");
 
@@ -78,6 +87,7 @@ async function createTranscription(
     const retryForm = new FormData();
     retryForm.append("model", config.model);
     retryForm.append("file", file, file.name || "speech.webm");
+    retryForm.append("response_format", "json");
     retryForm.append("language", process.env.LOCAL_STT_LANGUAGE || "en");
     const retryResponse = await fetch(localServiceUrl(config, "/audio/transcriptions"), {
       method: "POST",

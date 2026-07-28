@@ -8,6 +8,8 @@
   },
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
+    "test:tutor-gateway": "node --test scripts/tutor-gateway.test.mjs",
+    "tutor-gateway": "node scripts/tutor-gateway.mjs",
     "dev": "concurrently \"npm run dev:frontend\" \"npm run dev:backend\"",
     "dev:frontend": "cd frontend && npm run dev",
     "dev:backend": "cd backend && npm run dev"

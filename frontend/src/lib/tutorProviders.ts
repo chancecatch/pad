@@ -37,9 +37,9 @@ const SERVICE_LABELS: Record<TutorService, string> = {
 };
 
 const LOCAL_MODEL_DEFAULTS: Record<TutorService, string> = {
-  stt: "Systran/faster-distil-whisper-large-v3",
-  chat: "qwen3:30b-a3b-instruct-2507-q4_K_M",
-  tts: "kokoro",
+  stt: "mlx-community/whisper-large-v3-turbo-asr-fp16",
+  chat: "gemma4:12b-it-qat",
+  tts: "mlx-community/Kokoro-82M-bf16",
 };
 
 const TUTOR_USER_MESSAGE = "The tutor hit a temporary error. Please try again in a moment.";

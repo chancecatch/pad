@@ -14,6 +14,8 @@ import {
   tutorErrorResponse,
 } from "@/lib/tutorProviders";
 
+const TUTOR_TTS_MODEL = "mlx-community/Kokoro-82M-bf16";
+
 export async function POST(req: Request) {
   let serviceConfig: ReturnType<typeof resolveLocalServiceConfig> | null = null;
 
@@ -30,7 +32,10 @@ export async function POST(req: Request) {
       return Response.json({ error: "text_required", message: "Text is required." }, { status: 400 });
     }
 
-    serviceConfig = resolveLocalServiceConfig("tts");
+    serviceConfig = {
+      ...resolveLocalServiceConfig("tts"),
+      model: TUTOR_TTS_MODEL,
+    };
     const speech = await fetch(localServiceUrl(serviceConfig, "/audio/speech"), {
       method: "POST",
       headers: localServiceHeaders(serviceConfig, { "Content-Type": "application/json" }),
@@ -39,6 +44,7 @@ export async function POST(req: Request) {
         voice,
         input: text,
         instructions,
+        instruct: instructions,
         response_format: "mp3",
         speed,
       }),
@@ -62,8 +68,13 @@ export async function GET() {
   let serviceConfig: ReturnType<typeof resolveLocalServiceConfig> | null = null;
 
   try {
-    serviceConfig = resolveLocalServiceConfig("tts");
-    const response = await fetch(localServiceUrl(serviceConfig, "/audio/voices"), {
+    serviceConfig = {
+      ...resolveLocalServiceConfig("tts"),
+      model: TUTOR_TTS_MODEL,
+    };
+    const voiceUrl = new URL(localServiceUrl(serviceConfig, "/audio/voices"));
+    voiceUrl.searchParams.set("model", serviceConfig.model);
+    const response = await fetch(voiceUrl, {
       headers: localServiceHeaders(serviceConfig),
       cache: "no-store",
     });

@@ -17,6 +17,9 @@ backend/dist
 .eslintcache
 coverage
 *.tsbuildinfo
+**/__pycache__/
+*.py[cod]
+.runtime/
 
 # Logs
 npm-debug.log*
