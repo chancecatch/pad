@@ -63,7 +63,7 @@ type ClientBody = {
   speechMetrics?: SpeechMetrics | null;
 };
 
-const TUTOR_CHAT_MODEL = "gemma4:12b-it-qat";
+const TUTOR_CHAT_MODEL = "ornith-1.5:9b";
 
 export async function POST(req: Request) {
   let serviceConfig: ReturnType<typeof resolveLocalServiceConfig> | null = null;
@@ -164,13 +164,13 @@ export async function POST(req: Request) {
     if (!feedback.mine) feedback = { ...feedback, mine: fallbackMine(message) };
     const updatedProfile = profileId
       ? await updateLearnerPractice(profileId, {
-          userMessage: message,
-          assistantReply: displayReply,
-          mine: feedback.mine,
-          rewrite: feedback.rewrite,
-          note: feedback.note,
-          speechMetrics,
-        })
+        userMessage: message,
+        assistantReply: displayReply,
+        mine: feedback.mine,
+        rewrite: feedback.rewrite,
+        note: feedback.note,
+        speechMetrics,
+      })
       : null;
     return Response.json({
       reply: displayReply,

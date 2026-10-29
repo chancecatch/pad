@@ -39,6 +39,30 @@ tunnel token through an approved secure flow, store it in
 ./ops/macos/install-launchagents.sh --include-cloudflared
 ```
 
+Cloudflared is configured as an always-on connector with `KeepAlive=true` and a
+30-second launchd throttle. Do not replace this with `NetworkState`; current
+launchd no longer implements that condition. The unconditional keep-alive lets
+the connector retry if it starts before DNS is ready after login.
+
+To reinstall only Cloudflared without restarting healthy MLX-Audio and gateway
+agents:
+
+```bash
+./ops/macos/install-launchagents.sh \
+  --include-cloudflared \
+  --skip-ollama \
+  --skip-mlx-audio \
+  --skip-gateway \
+  --replace
+```
+
+Verify the connector and public gateway:
+
+```bash
+launchctl print gui/"$(id -u)"/com.pineatdawn.tutor.cloudflared
+curl --fail --silent --show-error https://tutor-api.pineatdawn.me/health
+```
+
 The helper does not create, display, or extract either token. It also refuses to
 install a second Cloudflare connector when the standard Cloudflare LaunchAgent
 or LaunchDaemon plist already exists. Existing PAD plists are preserved unless

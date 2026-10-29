@@ -2,12 +2,8 @@
   "name": "pad",
   "version": "1.0.0",
   "description": "Pine At Dawn",
-  "main": "index.js",
-  "directories": {
-    "doc": "docs"
-  },
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "npm run test:tutor-gateway",
     "test:tutor-gateway": "node --test scripts/tutor-gateway.test.mjs",
     "tutor-gateway": "node scripts/tutor-gateway.mjs",
     "dev": "concurrently \"npm run dev:frontend\" \"npm run dev:backend\"",

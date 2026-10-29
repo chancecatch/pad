@@ -20,12 +20,9 @@
   <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>
-  <dict>
-    <key>NetworkState</key>
-    <true/>
-  </dict>
+  <true/>
   <key>ThrottleInterval</key>
-  <integer>10</integer>
+  <integer>30</integer>
   <key>StandardOutPath</key>
   <string>__LOG_DIRECTORY__/cloudflared.stdout.log</string>
   <key>StandardErrorPath</key>

@@ -8,19 +8,20 @@ Live site: https://pineatdawn.me
 
 | Area | Stack |
 | --- | --- |
-| Frontend | Next.js 15, React 19, TypeScript |
+| Frontend | Next.js 16, React 19, TypeScript |
 | Backend | Express 5, MongoDB |
 | Content | Notion databases and pages |
 | Deploy | Vercel frontend, Heroku backend |
-| Local tutor | Mac UI plus Windows `hxi-ws01` local STT/chat/TTS over Tailscale |
+| Tutor runtime | Official Mac Ollama chat plus MLX Audio, authenticated gateway, and cloudflared LaunchAgents; direct gateway and Vercel tutor routes are live and verified |
 
 ## Local Development
 
-Run commands from the `pad` conda environment.
+The Node/npm runtime and the `pad` Conda environment were restored and verified
+on July 28. Run:
 
 ```bash
 conda activate pad
-cd /Users/myungjunlee/Documents/Research/Projects/Pad/web
+cd "$HOME/Research/Pad/web"
 npm run dev
 ```
 
@@ -38,7 +39,7 @@ npm --prefix backend run build
 
 - Notion-driven PAD projects and Mj portfolio pages.
 - Guestbook notes through the backend API.
-- Local-only English Tutor at `/tutor`.
+- English Tutor at `/tutor`, backed by verified Mac-hosted inference through an authenticated Cloudflare gateway and Vercel Next routes.
 - Wedding Exhibition XR wrapper at `/xr/wedding-exhibition`; direct route is deployable, but keep it unpromoted until media/privacy polish is complete.
 
-Tutor details live in `docs/local-first-english-tutor.md`.
+Tutor details live in `Docs/local-first-english-tutor.md`.

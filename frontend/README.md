@@ -6,7 +6,7 @@ Next.js frontend for https://pineatdawn.me.
 
 ```bash
 conda activate pad
-cd /Users/myungjunlee/Documents/Research/Projects/Pad/web/frontend
+cd "$HOME/Research/Pad/web/frontend"
 npm run dev
 ```
 
